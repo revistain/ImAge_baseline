@@ -1,5 +1,7 @@
 <img src="figures/ImAge.jpg" width="1000px">
 
+🆕 **[Feb 2026]** The code for obtaining the unified dataset have been released at [HERE](https://github.com/Tong-Jin01/Unified_dataset).
+
 This is the official repository for the NeurIPS 2025 paper "Towards Implicit Aggregation: Robust Image Representation for Place Recognition in the Transformer Era".
 
 [[Paper on ArXiv](https://arxiv.org/pdf/2511.06024) | [Paper on HF](https://huggingface.co/papers/2511.06024) | [Model on HF](https://huggingface.co/fenglu96/ImAge4VPR)]
@@ -108,4 +110,16 @@ author={Feng Lu and Tong Jin and Canming Ye and Xiangyuan Lan and Yunpeng Liu an
 booktitle={The Annual Conference on Neural Information Processing Systems},
 year={2025}
 }
+```
+
+```
+@ARTICLE{selavprpp,
+author={Lu, Feng and Jin, Tong and Lan, Xiangyuan and Zhang, Lijun and Liu, Yunpeng and Wang, Yaowei and Yuan, Chun},
+  journal={IEEE Transactions on Pattern Analysis and Machine Intelligence}, 
+  title={SelaVPR++: Towards Seamless Adaptation of Foundation Models for Efficient Place Recognition}, 
+  year={2025},
+  volume={},
+  number={},
+  pages={1-18},
+  doi={10.1109/TPAMI.2025.3629287}}
 ```
