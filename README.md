@@ -114,12 +114,12 @@ year={2025}
 
 ```
 @ARTICLE{selavprpp,
-author={Lu, Feng and Jin, Tong and Lan, Xiangyuan and Zhang, Lijun and Liu, Yunpeng and Wang, Yaowei and Yuan, Chun},
-  journal={IEEE Transactions on Pattern Analysis and Machine Intelligence}, 
-  title={SelaVPR++: Towards Seamless Adaptation of Foundation Models for Efficient Place Recognition}, 
-  year={2025},
-  volume={},
-  number={},
-  pages={1-18},
+author={Lu, Feng and Jin, Tong and Lan, Xiangyuan and Zhang, Lijun and Liu, Yunpeng and Wang, Yaowei and Yuan, Chun}, 
+  title={SelaVPR++: Towards Seamless Adaptation of Foundation Models for Efficient Place Recognition},
+  journal={IEEE Transactions on Pattern Analysis and Machine Intelligence},
+  year={2026},
+  volume={48},
+  number={3},
+  pages={2731-2748},
   doi={10.1109/TPAMI.2025.3629287}}
 ```
