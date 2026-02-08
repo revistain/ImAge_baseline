@@ -46,6 +46,7 @@ python3 train.py --eval_datasets_folder=/path/to/your/datasets_vg/datasets --eva
 ```
 
 If you don't have the MSLS-train dataset, you can also set `--initialization_dataset=gsv_cities`.
+Additionally, `--training_dataset` can be chosen as gsv_cities or unified_dataset (See [Here](https://github.com/Tong-Jin01/Unified_dataset) to get it).
 
 ## Test
 ```
@@ -81,8 +82,6 @@ python3 eval.py --eval_datasets_folder=/path/to/your/datasets_vg/datasets --eval
     </tr>
   </tbody>
 </table>
-
-！！！The code for merging previous VPR datasets to get the unified (merged) dataset is still being refined and will be released alongside the code of SelaVPR++. Please wait patiently.
 
 ## Others
 
