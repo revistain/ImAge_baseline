@@ -1,7 +1,6 @@
 import math
 import torch
 import torch.nn as nn
-from transformers.utils.fx import torch_stack
 
 
 # Code adapted from OpenGlue, MIT license

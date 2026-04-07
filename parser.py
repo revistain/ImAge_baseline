@@ -6,7 +6,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="Benchmarking Visual Geolocalization",
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     # Training parameters
-    parser.add_argument("--train_batch_size", type=int, default=120,
+    parser.add_argument("--train_batch_size", type=int, default=4,
                         help="Number of triplets (query, pos, negs) in a batch. Each triplet consists of 12 images")
     parser.add_argument("--patience", type=int, default=20)
     parser.add_argument("--lr", type=float, default=0.00005, help="_")
@@ -24,6 +24,9 @@ def parse_arguments():
     # Model parameters
     parser.add_argument("--backbone", type=str, default="dinov2",
                         choices=["dinov2", "vit", "clip"], help="_")
+    parser.add_argument("--backbone_size", type=str, default="b",
+                        choices=["s", "b", "l"],
+                        help="DINOv2 backbone size: s=vit_small(384), b=vit_base(768), l=vit_large(1024)")
     parser.add_argument("--aggregator", type=str, default= None,
                         choices=["netvlad", "salad", "boq", None])
     parser.add_argument("--freeze_te", type=int, default=None, choices=list(range(0, 11)))
@@ -35,24 +38,33 @@ def parse_arguments():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--foundation_model_path", type=str, default=None,
                         help="Path to load foundation model checkpoint.")
-    parser.add_argument("--initialization_dataset", type=str, default="msls_train",
-                        choices=["msls_train", "gsv_cities"],
+    parser.add_argument("--initialization_dataset", type=str, default="ms2_train",
+                        choices=["msls_train", "ms2_train", "gsv_cities", "None"],
                         help="sample place images to initialize learnable aggregation tokens")
-    parser.add_argument("--training_dataset", type=str, default="gsv_cities", choices=["gsv_cities", "unified_dataset"],
+    parser.add_argument("--training_dataset", type=str, default="ms2_train", choices=["gsv_cities", "unified_dataset", "ms2_train"],
                         help="Dataset for model training")
+    parser.add_argument("--cache_refresh_rate", type=int, default=1000,
+                        help="How many queries are selected each cache refresh (ms2_train only)")
+    parser.add_argument("--queries_per_epoch", type=int, default=2000,
+                        help="Total number of queries sampled per training epoch (ms2_train only)")
+    parser.add_argument("--margin", type=float, default=0.1,
+                        help="Margin for triplet loss (ms2_train only)")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to load checkpoint from, for resuming training or testing.")
+    parser.add_argument("--finetune", type=str, default=None,
+                        help="Path to a model-only checkpoint (e.g. ImAge_GSV.pth) to finetune from. "
+                             "Loads weights only; optimizer and epoch state start fresh.")
     
     # Other parameters
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--num_workers", type=int, default=4, help="num_workers for all dataloaders")
-    parser.add_argument('--resize', type=int, default=[322, 322], nargs=2, help="Resizing shape for images (HxW).")
+    parser.add_argument('--resize', type=int, default=[224, 224], nargs=2, help="Resizing shape for images (HxW).") # 322 x 322
     parser.add_argument('--test_method', type=str, default="hard_resize",
                         choices=["hard_resize", "single_query", "central_crop", "five_crops", "nearest_crop", "maj_voting"],
                         help="This includes pre/post-processing methods and prediction refinement")
     parser.add_argument("--majority_weight", type=float, default=0.01, 
                         help="only for majority voting, scale factor, the higher it is the more importance is given to agreement")
-    parser.add_argument("--val_positive_dist_threshold", type=int, default=25, help="_")
+    parser.add_argument("--val_positive_dist_threshold", type=int, default=10, help="_")
     parser.add_argument("--train_positives_dist_threshold", type=int, default=10, help="_")
     parser.add_argument('--recall_values', type=int, default=[1, 5, 10, 100], nargs="+",
                         help="Recalls to be computed, such as R@5.")
@@ -66,20 +78,17 @@ def parse_arguments():
     parser.add_argument("--random_resized_crop", type=float, default=None, help="_")
     parser.add_argument("--random_rotation", type=float, default=None, help="_")
     # Paths parameters
-    parser.add_argument("--eval_datasets_folder", type=str, default=None, help="Path with all datasets")
-    parser.add_argument("--eval_dataset_name", type=str, default="pitts30k", help="Relative path of the dataset")
+    parser.add_argument("--datasets_folder", type=str, default=None, help="Path with all datasets")
+    parser.add_argument("--dataset_name", type=str, default="pitts30k", help="Relative path of the dataset")
 
     parser.add_argument("--save_dir", type=str, default="default",
                         help="Folder name of the current run (saved in ./logs/)")
+    parser.add_argument("--train_seq", type=str, default="none", help="_", nargs="+", choices=["Campus", "Residential", "Urban", 'KAIST', 'SNU', 'Valley', 'r0', 'r1'])
+    parser.add_argument("--test_seq", type=str, default="none", help="_", nargs="+", choices=["Campus", "Residential", "Urban", 'KAIST', 'SNU', 'Valley', 'r0', 'r1'])
+    parser.add_argument("--img_time", type=str, default="allday",
+                        choices=["allday", "daytime", "nighttime", "latetime"])
+    parser.add_argument("--rgb_model_path", type=str, default="/home/jwkim/workspace/benchmark_THR2RGB/ImAge/ImAge_GSV.pth")
     args = parser.parse_args()
-    
-    if args.eval_datasets_folder == None:
-        try:
-            args.eval_datasets_folder = os.environ['DATASETS_FOLDER']
-        except KeyError:
-            raise Exception("You should set the parameter --datasets_folder or export " +
-                            "the DATASETS_FOLDER environment variable as such \n" +
-                            "export DATASETS_FOLDER=../datasets_vg/datasets")
     
     return args
 

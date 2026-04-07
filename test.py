@@ -7,7 +7,7 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Subset
 
-def test(args, eval_ds, model, test_method="hard_resize", pca=None):
+def test(args, eval_ds, model, test_method="hard_resize", pca=None, return_features=False):
     """Compute features of the given dataset and compute the recalls."""
     
     assert test_method in ["hard_resize", "single_query", "central_crop", "five_crops",
@@ -43,7 +43,7 @@ def test(args, eval_ds, model, test_method="hard_resize", pca=None):
         for inputs, indices in tqdm(queries_dataloader, ncols=100):
             if test_method == "five_crops" or test_method == "nearest_crop" or test_method == 'maj_voting':
                 inputs = torch.cat(tuple(inputs))  # shape = 5*bs x 3 x 480 x 480
-            features = model(inputs.to(args.device))
+            features = model(inputs.to(args.device), is_thermal=True)
             if test_method == "five_crops":  # Compute mean along the 5 crops
                 features = torch.stack(torch.split(features, 5)).mean(1)
             features = features.cpu().numpy()
@@ -60,7 +60,11 @@ def test(args, eval_ds, model, test_method="hard_resize", pca=None):
     
     queries_features = all_features[eval_ds.database_num:]
     database_features = all_features[:eval_ds.database_num]
-    
+
+    if return_features:
+        db_feats_copy = database_features.copy()
+        q_feats_copy  = queries_features.copy()
+
     faiss_index = faiss.IndexFlatL2(args.features_dim)
     faiss_index.add(database_features)
     del database_features, all_features
@@ -81,4 +85,6 @@ def test(args, eval_ds, model, test_method="hard_resize", pca=None):
     recalls = recalls / eval_ds.queries_num * 100
 
     recalls_str = ", ".join([f"R@{val}: {rec:.1f}" for val, rec in zip(args.recall_values, recalls)])
+    if return_features:
+        return recalls, recalls_str, db_feats_copy, q_feats_copy
     return recalls, recalls_str

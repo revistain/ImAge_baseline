@@ -1,0 +1,16 @@
+2026-03-17 01:41:52   Arguments: Namespace(train_batch_size=4, patience=20, lr=5e-05, optim='adam', epochs_num=20, negs_num_per_query=10, neg_samples_num=1000, mining='partial', infer_batch_size=16, backbone='dinov2', backbone_size='s', aggregator=None, freeze_te=8, trunc_te=None, num_learnable_aggregation_tokens=8, fc_output_dim=None, seed=0, foundation_model_path=None, initialization_dataset='ms2_train', training_dataset='ms2_train', cache_refresh_rate=1000, queries_per_epoch=2000, margin=0.1, resume='/home/jwkim/workspace/benchmark_THR2RGB/ImAge/logs/default/2026-03-09_05-12-44/best_model.pth', device='cuda', num_workers=4, resize=[224, 224], test_method='hard_resize', majority_weight=0.01, val_positive_dist_threshold=10, train_positives_dist_threshold=10, recall_values=[1, 5, 10, 100], brightness=None, contrast=None, saturation=None, hue=None, rand_perspective=None, horizontal_flip=False, random_resized_crop=None, random_rotation=None, datasets_folder='/home/jwkim/workspace/benchmark_THR2RGB/Datasets', dataset_name='pitts30k', save_dir='test/default/2026-03-17_01-41-52', train_seq='none', test_seq=['Campus', 'Residential', 'Urban'], img_time='allday')
+2026-03-17 01:41:52   xFormers not available
+2026-03-17 01:41:52   using MLP layer as FFN
+2026-03-17 01:41:55   Resuming model from /home/jwkim/workspace/benchmark_THR2RGB/ImAge/logs/default/2026-03-09_05-12-44/best_model.pth
+2026-03-17 01:41:55   features_dim: 3072
+2026-03-17 01:41:55   Dataset: < BaseDataset, pitts30k (ms2) - #database(RGB): 1207; #queries(Thermal): 18415 >
+2026-03-17 01:42:49   Recalls on Campus: R@1: 97.1, R@5: 100.0, R@10: 100.0, R@100: 100.0
+2026-03-17 01:42:49   Dataset: < BaseDataset, pitts30k (ms2) - #database(RGB): 496; #queries(Thermal): 9029 >
+2026-03-17 01:43:14   Recalls on Residential: R@1: 54.6, R@5: 70.0, R@10: 72.8, R@100: 78.7
+2026-03-17 01:43:14   Dataset: < BaseDataset, pitts30k (ms2) - #database(RGB): 955; #queries(Thermal): 13810 >
+2026-03-17 01:43:55   Recalls on Urban: R@1: 61.0, R@5: 78.5, R@10: 82.1, R@100: 85.5
+2026-03-17 01:43:56   Total features: (43912, 3072)  (RGB: 2658, Thermal: 41254)
+2026-03-17 01:43:56   Subsampling 43912 → 6000 points for t-SNE
+2026-03-17 01:43:56   Running t-SNE (this may take a few minutes)...
+2026-03-17 01:44:27   t-SNE done.
+2026-03-17 01:44:28   Saved t-SNE plot → test/default/2026-03-17_01-41-52/tsne.png

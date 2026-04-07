@@ -13,7 +13,6 @@ import datasets_ws
 import network
 import warnings
 warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 ######################################### SETUP #########################################
 args = parser.parse_arguments()
@@ -24,8 +23,6 @@ commons.make_deterministic(args.seed)
 
 logging.info(f"Arguments: {args}")
 logging.info(f"The outputs are being saved in {args.save_dir}")
-args.features_dim = args.num_learnable_aggregation_tokens * 768
-
 ######################################### MODEL #########################################
 model = network.VPRmodel(args)
 model = model.to(args.device)
@@ -38,11 +35,24 @@ if args.resume is not None:
 # would append "module." in front of the keys of the state dict triggering errors
 model = torch.nn.DataParallel(model)
 
-######################################### DATASETS #########################################
-test_ds = datasets_ws.BaseDataset(args, args.eval_datasets_folder, args.eval_dataset_name, "test")
-logging.info(f"Test set: {test_ds}")
+if args.aggregator:
+    pass  # features_dim already set inside get_aggregator()
+else:
+    args.features_dim = args.num_learnable_aggregation_tokens * model.module.backbone.embed_dim
+logging.info(f"features_dim: {args.features_dim}")
+
+test_ds_list = []
+test_sequences = args.test_seq
+for seq in test_sequences:
+    args.sequences = [seq]  
+    ######################################### DATASETS #########################################
+    test_ds = datasets_ws.BaseDataset(args, args.datasets_folder, args.dataset_name, "test")
+    test_ds_list.append(test_ds)
+    logging.info(f"Test set: {test_ds}")
 
 ######################################### TEST on TEST SET #########################################
-recalls, recalls_str = test.test(args, test_ds, model, args.test_method)
-logging.info(f"Recalls on {test_ds}: {recalls_str}")
-logging.info(f"Finished in {str(datetime.now() - start_time)[:-7]}")
+for seq, val_dataset in zip(test_sequences, test_ds_list):
+    recalls, recalls_str = test.test(args, val_dataset, model, args.test_method)
+    logging.info(f"Recalls on {test_ds}: {recalls_str}")
+
+    logging.info(f"Finished in {str(datetime.now() - start_time)[:-7]}")

@@ -1,3 +1,4 @@
+import custom_wandb as cw
 import torch
 import logging
 import numpy as np
@@ -14,16 +15,16 @@ import parser
 import commons
 import datasets_ws
 import network
-from loss import loss_function
-from dataloaders.GSVCities import get_GSVCities
-from torch.cuda.amp import GradScaler,autocast
+import math
+from torch.cuda.amp import GradScaler, autocast
 
 import warnings
 warnings.filterwarnings("ignore")
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+
 #### Initial setup: parser, logging...
 args = parser.parse_arguments()
+cw.wandb_init(args, name="ImAge-DINOv2_b-MutualRGBInit-thermalUnFreezed")
 start_time = datetime.now()
 args.save_dir = join("logs", args.save_dir, start_time.strftime('%Y-%m-%d_%H-%M-%S'))
 commons.setup_logging(args.save_dir)
@@ -33,12 +34,35 @@ logging.info(f"The outputs are being saved in {args.save_dir}")
 logging.info(f"Using {torch.cuda.device_count()} GPUs and {multiprocessing.cpu_count()} CPUs")
 
 #### Creation of Datasets
-logging.debug(f"Loading dataset {args.eval_dataset_name} from folder {args.eval_datasets_folder}")
+logging.debug(f"Loading dataset {args.dataset_name} from folder {args.datasets_folder}")
 
-val_ds0 = datasets_ws.BaseDataset(args, args.eval_datasets_folder, "pitts30k", "val")
-logging.info(f"Val set0: {val_ds0}")
-val_ds1 = datasets_ws.BaseDataset(args, args.eval_datasets_folder, "msls", "val")
-logging.info(f"Val set1: {val_ds1}")
+############################################################
+args.sequences = args.train_seq
+triplets_ds = datasets_ws.TripletsDataset(args, args.datasets_folder, args.dataset_name, "train", args.negs_num_per_query)
+logging.info(f"Train query set: {triplets_ds}")
+
+test_sequences = args.test_seq
+val_ds_list = []
+test_ds_list = []
+
+for seq in test_sequences:
+    args.sequences = [seq]  
+    
+    val_ds0 = datasets_ws.BaseDataset(args, args.datasets_folder, args.dataset_name, "test")
+    val_ds_list.append(val_ds0)
+    logging.info(f"[Val - {seq}] Database: {val_ds0.database_num}, Queries: {val_ds0.queries_num}, Total: {len(val_ds0)}")
+    
+    val_ds1 = datasets_ws.BaseDataset(args, args.datasets_folder, args.dataset_name, "test")
+    test_ds_list.append(val_ds1)
+    logging.info(f"[Test - {seq}] Database: {val_ds1.database_num}, Queries: {val_ds1.queries_num}, Total: {len(val_ds1)}")
+
+args.sequences = args.train_seq
+############################################################
+
+# val_ds0 = datasets_ws.BaseDataset(args, args.eval_datasets_folder, "pitts30k", "val")
+# logging.info(f"Val set0: {val_ds0}")
+# val_ds1 = datasets_ws.BaseDataset(args, args.eval_datasets_folder, "msls", "val")
+# logging.info(f"Val set1: {val_ds1}")
 
 #### Initialize model
 model = network.VPRmodel(args)
@@ -56,55 +80,12 @@ print(f"The aggregator parameters: {aggregator_params / 1e6:.2f}M")
 
 #### Initialize agg tokens
 if not args.aggregator:
-    args.features_dim = 768
-    if not args.resume:
-        pretrained_model = network.get_backbone(args)
-        if args.initialization_dataset == "msls_train":
-            from initialize_agg_tokens import initialize_learnable_aggregation_tokens_centroids_msls_train, initialize_learnable_aggregation_tokens_centroids_L2N
-            triplets_ds = datasets_ws.TripletsDataset(args, args.eval_datasets_folder, "msls", "train", args.negs_num_per_query)
-            logging.info(f"Train query set: {triplets_ds}")
-            triplets_ds.is_inference = True
-            initial_centroids, initial_descriptors = initialize_learnable_aggregation_tokens_centroids_msls_train(args, triplets_ds, pretrained_model.to(args.device))
-            centroids_L2N = initialize_learnable_aggregation_tokens_centroids_L2N(initial_centroids, initial_descriptors)
-            model.module.learnable_aggregation_tokens = torch.nn.Parameter(torch.from_numpy(centroids_L2N).to(args.device).unsqueeze(0))
-
-        elif args.initialization_dataset == "gsv_cities":
-            from initialize_agg_tokens import initialize_learnable_aggregation_tokens_centroids_gsv, initialize_learnable_aggregation_tokens_centroids_L2N
-            TRAIN_CITIES = [
-            'Bangkok',
-            'BuenosAires',
-            'LosAngeles',
-            'MexicoCity',
-            'OSL', # refers to Oslo
-            'Rome',
-            'Barcelona',
-            'Chicago',
-            'Madrid',
-            'Miami',
-            'Phoenix',
-            'TRT', # refers to Toronto
-            'Boston',
-            'Lisbon',
-            'Medellin',
-            'Minneapolis',
-            'PRG', # refers to Prague
-            'WashingtonDC',
-            'Brussels',
-            'London',
-            'Melbourne',
-            'Osaka',
-            'PRS', # refers to Paris
-            ]
-            initial_dataset = get_GSVCities(image_size=(224, 224), cities=TRAIN_CITIES)
-            initial_centroids, initial_descriptors = initialize_learnable_aggregation_tokens_centroids_gsv(args, initial_dataset, pretrained_model.to(args.device))
-            centroids_L2N = initialize_learnable_aggregation_tokens_centroids_L2N(initial_centroids, initial_descriptors)
-            model.module.learnable_aggregation_tokens = torch.nn.Parameter(torch.from_numpy(centroids_L2N).to(args.device).unsqueeze(0))
-    args.features_dim = args.features_dim * args.num_learnable_aggregation_tokens
+    args.features_dim = model.module.backbone_rgb.embed_dim * args.num_learnable_aggregation_tokens
 
 if args.aggregator in ["netvlad"]:  # If using NetVLAD layer, initialize it
     args.features_dim = 768
     if not args.resume:
-        triplets_ds = datasets_ws.TripletsDataset(args, args.eval_datasets_folder, "msls", "train", args.negs_num_per_query)
+        triplets_ds = datasets_ws.TripletsDataset(args, args.datasets_folder, "msls", "train", args.negs_num_per_query)
         logging.info(f"Train query set: {triplets_ds}")
         triplets_ds.is_inference = True
         pretrained_model = network.get_backbone(args)
@@ -122,176 +103,114 @@ elif args.optim == "sgd":
 #### Resume model, optimizer, and other training parameters
 if args.resume:
     model, optimizer, best_r1_r5, start_epoch_num, not_improved_num = util.resume_train(args, model, optimizer)
-    logging.info(f"Resuming from epoch {start_epoch_num} with best recall@5 {best_r5:.1f}")
+    logging.info(f"Resuming from epoch {start_epoch_num} with best (R@1 + R@5) {best_r1_r5:.1f}")
+# elif args.finetune:
+#     # 모델 weight만 로드 (epoch/optimizer 상태는 새로 시작)
+#     ckpt = torch.load(args.finetune, map_location=args.device, weights_only=False)
+#     sd   = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
+#     if list(sd.keys())[0].startswith('module.'):
+#         sd = {k.replace('module.', ''): v for k, v in sd.items()}
+#     model.module.load_state_dict(sd)
+#     logging.info(f"Finetuning from {args.finetune} (epoch 0, optimizer reset)")
+#     best_r1_r5 = start_epoch_num = not_improved_num = 0
 else:
     best_r1_r5 = start_epoch_num = not_improved_num = 0
 
-if args.training_dataset == "gsv_cities":
-    TRAIN_CITIES = [
-        'Bangkok',
-        'BuenosAires',
-        'LosAngeles',
-        'MexicoCity',
-        'OSL', # refers to Oslo
-        'Rome',
-        'Barcelona',
-        'Chicago',
-        'Madrid',
-        'Miami',
-        'Phoenix',
-        'TRT', # refers to Toronto
-        'Boston',
-        'Lisbon',
-        'Medellin',
-        'Minneapolis',
-        'PRG', # refers to Prague
-        'WashingtonDC',
-        'Brussels',
-        'London',
-        'Melbourne',
-        'Osaka',
-        'PRS', # refers to Paris
-    ]
-else:
-    TRAIN_CITIES = [
-        "SFXL",
-        'Bangkok',
-        'BuenosAires',
-        'LosAngeles',
-        'MexicoCity',
-        'OSL', # refers to Oslo
-        'Rome',
-        'Barcelona',
-        'Chicago',
-        'Madrid',
-        'Miami',
-        'Phoenix',
-        'TRT', # refers to Toronto
-        'Boston',
-        'Lisbon',
-        'Medellin',
-        'Minneapolis',
-        'PRG', # refers to Prague
-        'WashingtonDC',
-        'Brussels',
-        'London',
-        'Melbourne',
-        'Osaka',
-        'PRS', # refers to Paris
-    ]
+#### Training loop (MS2 triplets)
+GlobalTriplet = torch.nn.TripletMarginLoss(margin=args.margin, p=2, reduction="sum")
+loops_num = math.ceil(args.queries_per_epoch / args.cache_refresh_rate)
 
-    citylist = [
-        "Trondheim",
-        "Amsterdam",
-        "Helsinki",
-        "Tokyo",
-        "Toronto",
-        "Saopaulo",
-        "Moscow",
-        "Zurich",
-        "Paris",
-        "Budapest",
-        "Austin",
-        "Berlin",
-        "Ottawa",
-        "Goa",
-        "Amman",
-        "Nairobi",
-        "Manila",
-        "bangkok",
-        "boston",
-        "london",
-        "melbourne",
-        "phoenix",
-        "Pitts30k"
-    ]
-    newcitylist = []
-    for i in range(18):
-        for cityname in citylist:
-            if i==17 and (cityname == "Amman" or cityname == "Nairobi"):
-                continue
-            else:
-                newcitylist.append(cityname+str(i))
-    TRAIN_CITIES = TRAIN_CITIES + newcitylist
+thermal_flag = torch.zeros(1, dtype=torch.long)
+rgb_flags = torch.ones(1 + args.negs_num_per_query, dtype=torch.long)
+bundle_flags = torch.cat([thermal_flag, rgb_flags])
+flags = bundle_flags.repeat(args.train_batch_size)
 
-train_dataset = get_GSVCities(image_size=(224, 224), cities=TRAIN_CITIES)
-train_loader_config = {
-    'batch_size': args.train_batch_size,
-    'num_workers': args.num_workers,
-    'drop_last': False,
-    'pin_memory': True,
-    'shuffle': False}
-
-#### Training loop
-ds = DataLoader(dataset=train_dataset, **train_loader_config)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=len(ds)*3, gamma=0.5, last_epoch=-1)
-scaler = GradScaler()
 for epoch_num in range(start_epoch_num, args.epochs_num):
     logging.info(f"Start training epoch: {epoch_num:02d}")
-    
     epoch_start_time = datetime.now()
-    epoch_losses = np.zeros((0,1), dtype=np.float32)
-          
-    model = model.train()
-    epoch_losses=[]
-    for images, place_id in tqdm(ds):       
-        BS, N, ch, h, w = images.shape
-        # reshape places and labels
-        images = images.view(BS*N, ch, h, w)
-        labels = place_id.view(-1)
+    epoch_losses = []
 
-        optimizer.zero_grad()
-        with autocast():
-            descriptors = model(images.to(args.device)).cuda()
-            loss = loss_function(descriptors, labels) # Call the loss_function we defined above
+    for loop_num in range(loops_num):
+        logging.debug(f"Cache refresh: {loop_num + 1} / {loops_num}")
+
+        triplets_ds.is_inference = True
+        triplets_ds.compute_triplets(args, model)
+        triplets_ds.is_inference = False
+
+        triplets_dl = DataLoader(dataset=triplets_ds, num_workers=args.num_workers,
+                                 batch_size=args.train_batch_size,
+                                 collate_fn=datasets_ws.collate_fn,
+                                 pin_memory=(args.device == "cuda"),
+                                 drop_last=True)
+
+        model = model.train()
+        for images, triplets_local_indexes, _ in tqdm(triplets_dl, ncols=100):
+            loss = torch.tensor(0.0, device=args.device)
+            
+            optimizer.zero_grad()
+            descriptors = model(images.to(args.device), flags)
+            triplets_local_indexes = torch.transpose(
+                triplets_local_indexes.view(args.train_batch_size, args.negs_num_per_query, 3), 1, 0)
+            for triplets in triplets_local_indexes:
+                queries_indexes, positives_indexes, negatives_indexes = triplets.T
+                loss += GlobalTriplet(
+                    descriptors[queries_indexes],
+                    descriptors[positives_indexes],
+                    descriptors[negatives_indexes],
+                )
+            loss /= (args.train_batch_size * args.negs_num_per_query)
             del descriptors
 
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-        scheduler.step()
-        
-        # Keep track of all losses by appending them to epoch_losses
-        batch_loss = loss.item()
-        epoch_losses = np.append(epoch_losses, batch_loss)
-        del loss
+            optimizer.step()
+            loss.backward()
+
+            epoch_losses.append(loss.item())
+            del loss
+
+        logging.debug(f"Epoch[{epoch_num:02d}]({loop_num + 1}/{loops_num}): "
+                      f"average triplet loss = {np.mean(epoch_losses):.4f}")
 
     logging.info(f"Finished epoch {epoch_num:02d} in {str(datetime.now() - epoch_start_time)[:-7]}, "
-                 f"average epoch triplet loss = {epoch_losses.mean():.4f}")
-    
-    # Compute recalls on validation set
-    recalls0, recalls_str0 = test.test(args, val_ds0, model)
-    logging.info(f"Recalls on val set0 {val_ds0}: {recalls_str0}")
-    recalls1, recalls_str1 = test.test(args, val_ds1, model)
-    logging.info(f"Recalls on val set1 {val_ds1}: {recalls_str1}")
-    is_best = recalls1[0] + recalls1[1] > best_r1_r5
+                 f"average epoch triplet loss = {np.mean(epoch_losses):.4f}")
 
-    # Save checkpoint, which contains all training parameters
+    # Compute recalls on all validation sequences
+    all_r1, all_r5 = [], []
+    for seq, val_dataset in zip(test_sequences, val_ds_list):
+        recalls, recalls_str = test.test(args, val_dataset, model)
+        logging.info(f"Recalls on [{seq}] {val_dataset}: {recalls_str}")
+        cw.wandb_log("r1", seq, recalls[0])
+        cw.wandb_log("r5", seq, recalls[1])
+        cw.wandb_log("r10", seq, recalls[2])
+        all_r1.append(recalls[0])
+        all_r5.append(recalls[1])
+
+    avg_r1_r5 = np.mean(all_r1) + np.mean(all_r5)
+    is_best = avg_r1_r5 > best_r1_r5
+
     util.save_checkpoint(args, {"epoch_num": epoch_num, "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(), "recalls": recalls1, "best_r1_r5": best_r1_r5,
+        "optimizer_state_dict": optimizer.state_dict(),
+        "recalls": (np.mean(all_r1), np.mean(all_r5)), "best_r1_r5": best_r1_r5,
         "not_improved_num": not_improved_num
     }, is_best, filename="last_model.pth")
-    
-    # If recall@1 + recall@5 did not improve for "many" epochs, stop training
+
     if is_best:
-        logging.info(f"Improved: previous best (R@1 + R@5) = {best_r1_r5:.1f}, current (R@1 + R@5) = {(recalls1[0]+recalls1[1]):.1f}")
-        best_r1_r5 = (recalls1[0]+recalls1[1])
+        logging.info(f"Improved: previous best avg (R@1 + R@5) = {best_r1_r5:.1f}, current = {avg_r1_r5:.1f}")
+        best_r1_r5 = avg_r1_r5
         not_improved_num = 0
     else:
         not_improved_num += 1
-        logging.info(f"Not improved: {not_improved_num} / {args.patience}: best (R@1 + R@5) = {best_r1_r5:.1f}, current (R@1 + R@5) = {(recalls1[0]+recalls1[1]):.1f}")
+        logging.info(f"Not improved: {not_improved_num} / {args.patience}: best = {best_r1_r5:.1f}, current = {avg_r1_r5:.1f}")
         if not_improved_num >= args.patience:
             logging.info(f"Performance did not improve for {not_improved_num} epochs. Stop training.")
             break
 
-logging.info(f"Best (R@1 + R@5): {best_r1_r5:.1f}")
+logging.info(f"Best avg (R@1 + R@5): {best_r1_r5:.1f}")
 logging.info(f"Trained for {epoch_num+1:02d} epochs, in total in {str(datetime.now() - start_time)[:-7]}")
-test_ds = datasets_ws.BaseDataset(args, args.eval_datasets_folder, args.eval_dataset_name, "test")
-logging.info(f"Test set: {test_ds}")
 
-# load the best model for testing
-logging.info("Test *best* model on test set")
+# Test best model on all test sequences
+logging.info("Test *best* model on all test sequences")
 best_model_state_dict = torch.load(join(args.save_dir, "best_model.pth"), weights_only=False)["model_state_dict"]
 model.load_state_dict(best_model_state_dict)
-recalls, recalls_str = test.test(args, test_ds, model, test_method=args.test_method)
-logging.info(f"Recalls on {test_ds}: {recalls_str}")
+for seq, test_dataset in zip(test_sequences, test_ds_list):
+    recalls, recalls_str = test.test(args, test_dataset, model, test_method=args.test_method)
+    logging.info(f"Recalls on [{seq}] {test_dataset}: {recalls_str}")

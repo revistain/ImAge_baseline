@@ -99,6 +99,49 @@ def initialize_learnable_aggregation_tokens_centroids_msls_train(args, cluster_d
     logging.debug(f"The shapes of cluster centers: {kmeans.centroids.shape}")
     return kmeans.centroids, descriptors
 
+def initialize_learnable_aggregation_tokens_centroids_ms2(args, cluster_ds, backbone):
+    """Initialize learnable aggregation token centroids using MS2 (or any custom) training dataset.
+    Handles datasets smaller than the default descriptor budget by clamping images_num.
+    Uses the backbone's actual embed_dim instead of args.features_dim to avoid dimension mismatch.
+    """
+    descs_num_per_image = 100
+    dataset_size = len(cluster_ds)
+    images_num = min(math.ceil(500000 / descs_num_per_image), dataset_size)
+    descriptors_num = images_num * descs_num_per_image
+
+    random_sampler = SubsetRandomSampler(np.random.choice(dataset_size, images_num, replace=False))
+    random_dl = DataLoader(dataset=cluster_ds, num_workers=args.num_workers,
+                           batch_size=args.infer_batch_size, sampler=random_sampler)
+    with torch.no_grad():
+        backbone = backbone.eval()
+        logging.debug("Extracting features to initialize aggregation tokens!")
+        backbone_dim = backbone.embed_dim
+        descriptors = np.zeros(shape=(descriptors_num, backbone_dim), dtype=np.float32)
+        filled = 0
+        for _, (inputs, _) in enumerate(tqdm(random_dl, ncols=100)):
+            inputs = inputs.to(args.device)
+            if args.backbone.startswith("dinov2"):
+                outputs = backbone(inputs)
+                patch_tokens = outputs["x_norm_patchtokens"]  # [B, num_patches, D]
+                B, num_patches, D = patch_tokens.shape
+                W = H = int(math.sqrt(num_patches))
+                patch_tokens = patch_tokens.view(B, W, H, D).permute(0, 3, 1, 2)  # [B, D, W, H]
+            norm_outputs = F.normalize(patch_tokens, p=2, dim=1)  # [B, D, W, H]
+            image_descriptors = norm_outputs.view(B, D, -1).permute(0, 2, 1)  # [B, W*H, D]
+            image_descriptors = image_descriptors.cpu().numpy()
+            for ix in range(B):
+                if filled + descs_num_per_image > descriptors_num:
+                    break
+                sample = np.random.choice(image_descriptors.shape[1], descs_num_per_image, replace=False)
+                descriptors[filled:filled + descs_num_per_image, :] = image_descriptors[ix, sample, :]
+                filled += descs_num_per_image
+    descriptors = descriptors[:filled]
+    kmeans = faiss.Kmeans(backbone_dim, args.num_learnable_aggregation_tokens, niter=100, verbose=False)
+    kmeans.train(descriptors)
+    logging.debug(f"The shapes of cluster centers: {kmeans.centroids.shape}")
+    return kmeans.centroids, descriptors
+
+
 def initialize_learnable_aggregation_tokens_centroids_L2N(centroids, descriptors):
     centroids_assign = centroids / np.linalg.norm(centroids, axis=1, keepdims=True)
     dots = np.dot(centroids_assign, descriptors.T)
