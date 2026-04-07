@@ -43,3 +43,20 @@ def resume_train(args, model, optimizer=None, strict=False):
     if args.resume.endswith("best_model.pth"):  # Copy best model to current save_dir
         shutil.copy(args.resume.replace("best_model.pth", "best_model.pth"), args.save_dir)
     return model, optimizer, best_r1_r5, start_epoch_num, not_improved_num
+
+def Celsius2Raw(celcius_degree):
+    R = 380747
+    B = 1428
+    F = 1
+    O = -88.539
+    raw_value = R / (np.exp(B / (celcius_degree + 273.15)) - F) + O;
+    return raw_value
+
+# Raw thermal radiation value to tempearture 
+def Raw2Celsius(Raw):
+    R = 380747
+    B = 1428
+    F = 1
+    O = -88.539
+    Celsius = B / np.log(R / (Raw - O) + F) - 273.15;
+    return Celsius

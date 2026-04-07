@@ -18,6 +18,7 @@ from torch.utils.data.dataloader import DataLoader
 
 from scipy.spatial.distance import pdist
 import math
+from utils import Raw2Celsius
 
 base_transform = transforms.Compose([
     transforms.ToTensor(),
@@ -132,13 +133,23 @@ class BaseDataset(data.Dataset):
             
         return Image.fromarray(img)
 
+    # def get_thermal_img(self, path):
+    #     path = str(path).strip("[]'")
+    #     img = cv2.imread(path, cv2.IMREAD_ANYDEPTH)
+    #     img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+    #     img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+    #     return Image.fromarray(img)
+
     def get_thermal_img(self, path):
-        path = str(path).strip("[]'")
         img = cv2.imread(path, cv2.IMREAD_ANYDEPTH)
+        if self.dataset_type=='ms2':
+            img = Raw2Celsius(img)
+            img = np.clip(img, self.min_temp, self.max_temp)
+
         img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-        return Image.fromarray(img)
-
+        return img
+    
     def __getitem__(self, index):
         # Database 인덱스면 RGB, Query 인덱스면 Thermal 호출
         if index < self.database_num:
