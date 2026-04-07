@@ -120,9 +120,9 @@ else:
 GlobalTriplet = torch.nn.TripletMarginLoss(margin=args.margin, p=2, reduction="sum")
 loops_num = math.ceil(args.queries_per_epoch / args.cache_refresh_rate)
 
-thermal_flag = torch.zeros(1, dtype=torch.long)
-rgb_flags = torch.ones(1 + args.negs_num_per_query, dtype=torch.long)
-bundle_flags = torch.cat([thermal_flag, rgb_flags])
+thermal_flag = torch.ones(1, dtype=torch.bool)
+rgb_flags = torch.zeros(1 + args.negs_num_per_query, dtype=torch.bool)
+bundle_flags = torch.cat([thermal_flag, rgb_flags]).to(args.device)  
 flags = bundle_flags.repeat(args.train_batch_size)
 
 for epoch_num in range(start_epoch_num, args.epochs_num):
@@ -161,8 +161,8 @@ for epoch_num in range(start_epoch_num, args.epochs_num):
             loss /= (args.train_batch_size * args.negs_num_per_query)
             del descriptors
 
-            optimizer.step()
             loss.backward()
+            optimizer.step()
 
             epoch_losses.append(loss.item())
             del loss

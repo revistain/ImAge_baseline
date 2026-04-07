@@ -25,10 +25,6 @@ base_transform = transforms.Compose([
 ])
 
 
-# def path_to_pil_img(path):
-#     return Image.open(path).convert("RGB")
-
-
 def collate_fn(batch):
     """Creates mini-batch tensors from the list of tuples (images, 
         triplets_local_indexes, triplets_global_indexes).
@@ -53,18 +49,6 @@ def collate_fn(batch):
     return images, torch.cat(tuple(triplets_local_indexes)), triplets_global_indexes
 
 
-class PCADataset(data.Dataset):
-    def __init__(self, args, datasets_folder="dataset", dataset_folder="pitts30k/images/train"):
-        dataset_folder_full_path = join(datasets_folder, dataset_folder)
-        if not os.path.exists(dataset_folder_full_path) :
-            raise FileNotFoundError(f"Folder {dataset_folder_full_path} does not exist")
-        self.images_paths = sorted(glob(join(dataset_folder_full_path, "**", "*.jpg"), recursive=True))
-    def __getitem__(self, index):
-        return base_transform(path_to_pil_img(self.images_paths[index]))
-    def __len__(self):
-        return len(self.images_paths)
-
-
 class BaseDataset(data.Dataset):
     """Dataset with images from database and queries, used for inference (testing and building cache).
     """
@@ -74,15 +58,13 @@ class BaseDataset(data.Dataset):
         self.dataset_name = dataset_name
         self.split = split
 
-        # if split == "train": args.sequences = args.train_seq
-        # elif split == "test": args.sequences = args.test_seq
-        # else: raise Exception("typo")
-            
         # 1. Custom Dataset Sequence 확인 (ms2 vs sthereo)
         if all(i in ['Campus', 'Residential', 'Urban'] for i in args.sequences):
             self.dataset_type = 'ms2'
         elif all(i in ['KAIST', 'SNU', 'Valley'] for i in args.sequences):
             self.dataset_type = 'sthereo'
+        elif all(i in ['r0', 'r1'] for i in args.sequences):
+            self.dataset_type = 'nsavp'
         else:
             raise Exception("sequence typo i guess")
             

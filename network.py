@@ -140,5 +140,7 @@ def get_backbone_thermal(args):
             if int(name) >= args.freeze_te:
                 for p in child.parameters():
                     p.requires_grad = True
-                    
+        for p in thr_backbone.norm.parameters():
+            p.requires_grad = True
+
     return thr_backbone, agg_tokens
