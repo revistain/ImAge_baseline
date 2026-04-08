@@ -2,7 +2,7 @@ import logging
 import torch
 from torch import nn
 import torch.nn.functional as F
-from sklearn.decomposition import PCA as SklearnPCA
+from torchvision.transforms import v2
 
 from aggregators.netvlad import NetVLAD
 from aggregators.salad import SALAD
@@ -17,7 +17,8 @@ class VPRmodel(nn.Module):
         self.aggregator = get_aggregator(args)
         self.num_learnable_aggregation_tokens = args.num_learnable_aggregation_tokens
         self.insertion_pos = args.freeze_te
-
+        self.norm_transform = v2.Compose([v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+        
         # RGB backbone: GSV pretrained, fully frozen
         self.backbone_rgb, agg_tokens_rgb = get_backbone_rgb(args)
         self.learnable_agg_tokens_rgb = nn.Parameter(agg_tokens_rgb.clone())
@@ -51,7 +52,8 @@ class VPRmodel(nn.Module):
     def forward(self, x: torch.Tensor, is_thermal=False) -> torch.Tensor:
         if isinstance(is_thermal, bool):
             is_thermal = torch.full((x.shape[0],), is_thermal, dtype=torch.bool, device=x.device)
-
+        x = self.norm_transform(x)
+        
         if is_thermal.all():
             return self._forward_impl(x, is_thermal=True)
         elif not is_thermal.any():

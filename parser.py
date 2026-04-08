@@ -57,7 +57,7 @@ def parse_arguments():
     
     # Other parameters
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
-    parser.add_argument("--num_workers", type=int, default=4, help="num_workers for all dataloaders")
+    parser.add_argument("--num_workers", type=int, default=6, help="num_workers for all dataloaders")
     parser.add_argument('--resize', type=int, default=[224, 224], nargs=2, help="Resizing shape for images (HxW).") # 322 x 322
     parser.add_argument('--test_method', type=str, default="hard_resize",
                         choices=["hard_resize", "single_query", "central_crop", "five_crops", "nearest_crop", "maj_voting"],

@@ -8,8 +8,8 @@ python3 train.py \
     --num_learnable_aggregation_tokens=8 \
     --train_batch_size=4 \
     --lr=0.00005 \
-    --train_seq Urban \
-    --test_seq Campus Residential \
+    --train_seq r0 \
+    --test_seq Campus Residential r1 \
     --epochs_num=40 \
     --patience=20 \
     --initialization_dataset=None \
@@ -19,4 +19,4 @@ python3 train.py \
     --margin=0.1 \
     --foundation_model_path=/home/jwkim/workspace/benchmark_THR2RGB/pretrained/dinov2_vitb14_reg4_pretrain.pth
 
-# Scene 종류 : ['Campus', 'Residential', 'Urban', 'KAIST', 'SNU', 'Valley'] 
+# Scene 종류 : ['Campus', 'Residential', 'Urban', 'KAIST', 'SNU', 'Valley', 'r0', 'r1'] 

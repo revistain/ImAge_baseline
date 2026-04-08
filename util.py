@@ -49,7 +49,7 @@ def Celsius2Raw(celcius_degree):
     B = 1428
     F = 1
     O = -88.539
-    raw_value = R / (np.exp(B / (celcius_degree + 273.15)) - F) + O;
+    raw_value = R / (np.exp(B / (celcius_degree + 273.15)) - F) + O
     return raw_value
 
 # Raw thermal radiation value to tempearture 
@@ -58,5 +58,5 @@ def Raw2Celsius(Raw):
     B = 1428
     F = 1
     O = -88.539
-    Celsius = B / np.log(R / (Raw - O) + F) - 273.15;
+    Celsius = B / np.log(R / (Raw - O) + F) - 273.15
     return Celsius

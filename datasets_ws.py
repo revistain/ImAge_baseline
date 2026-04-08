@@ -18,13 +18,12 @@ from torch.utils.data.dataloader import DataLoader
 
 from scipy.spatial.distance import pdist
 import math
-from utils import Raw2Celsius
+from util import Raw2Celsius
 
 base_transform = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
-
 
 def collate_fn(batch):
     """Creates mini-batch tensors from the list of tuples (images, 
@@ -83,15 +82,26 @@ class BaseDataset(data.Dataset):
         # 3. Database & Queries UTM 좌표 확보
         self.database_utms = np.concatenate([mat['db_pose'][0, 0] for mat in self.matStruct])
         
-        if self.img_time == 'allday':
-            self.queries_utms = np.concatenate([np.concatenate((mat['q_pose_morning'][0, 0], mat['q_pose_afternoon'][0, 0], mat['q_pose_evening'][0, 0])) if self.dataset_type == 'sthereo' else np.concatenate((mat['q_pose_morning'][0, 0], mat['q_pose_clearsky'][0, 0], mat['q_pose_rainy'][0, 0], mat['q_pose_nighttime'][0, 0])) for mat in self.matStruct])
-        elif self.img_time == 'daytime':
-            self.queries_utms = np.concatenate([np.concatenate((mat['q_pose_morning'][0, 0], mat['q_pose_afternoon'][0, 0])) if self.dataset_type == 'sthereo' else np.concatenate((mat['q_pose_morning'][0, 0], mat['q_pose_clearsky'][0, 0], mat['q_pose_rainy'][0, 0])) for mat in self.matStruct])
-        elif self.img_time == 'nighttime':
-            self.queries_utms = np.concatenate([mat['q_pose_evening'][0, 0] if self.dataset_type == 'sthereo' else mat['q_pose_nighttime'][0, 0] for mat in self.matStruct])
-        elif self.img_time == 'latetime':
-            self.queries_utms = np.concatenate([np.concatenate((mat['q_pose_afternoon'][0, 0], mat['q_pose_evening'][0, 0])) if self.dataset_type == 'sthereo' else mat['q_pose_nighttime'][0, 0] for mat in self.matStruct])
-
+        if self.dataset_type in ['ms2', 'sthereo']:
+            if self.img_time == 'allday':
+                self.queries_utms = np.concatenate([np.concatenate((mat['q_pose_morning'][0, 0], mat['q_pose_afternoon'][0, 0], mat['q_pose_evening'][0, 0])) if self.dataset_type == 'sthereo' else np.concatenate((mat['q_pose_morning'][0, 0], mat['q_pose_clearsky'][0, 0], mat['q_pose_rainy'][0, 0], mat['q_pose_nighttime'][0, 0])) for mat in self.matStruct])
+            elif self.img_time == 'daytime':
+                self.queries_utms = np.concatenate([np.concatenate((mat['q_pose_morning'][0, 0], mat['q_pose_afternoon'][0, 0])) if self.dataset_type == 'sthereo' else np.concatenate((mat['q_pose_morning'][0, 0], mat['q_pose_clearsky'][0, 0], mat['q_pose_rainy'][0, 0])) for mat in self.matStruct])
+            elif self.img_time == 'nighttime':
+                self.queries_utms = np.concatenate([mat['q_pose_evening'][0, 0] if self.dataset_type == 'sthereo' else mat['q_pose_nighttime'][0, 0] for mat in self.matStruct])
+            elif self.img_time == 'latetime':
+                self.queries_utms = np.concatenate([np.concatenate((mat['q_pose_afternoon'][0, 0], mat['q_pose_evening'][0, 0])) if self.dataset_type == 'sthereo' else mat['q_pose_nighttime'][0, 0] for mat in self.matStruct])
+        elif self.dataset_type in ['nsavp']:
+            if 'r0' in self.args.sequences:
+                self.queries_utms = np.concatenate(
+                    [np.concatenate((mat['q_pose_FA0'][0, 0], mat['q_pose_FN0'][0, 0], mat['q_pose_FS0'][0, 0])) for mat in self.matStruct])
+            elif 'r1' in self.args.sequences:
+                self.queries_utms = np.concatenate(
+                    [np.concatenate((mat['q_pose_FA0'][0, 0], mat['q_pose_DA0'][0, 0])) for mat in self.matStruct])
+            else:
+                print(self.dataset_type)
+                raise Exception("What?")
+            
         # 4. Soft Positives 계산 (기존 BaseDataset 로직 유지)
         knn = NearestNeighbors(n_jobs=-1)
         knn.fit(self.database_utms)
@@ -103,19 +113,31 @@ class BaseDataset(data.Dataset):
         # 5. Database(RGB) & Queries(Thermal) 경로 확보
         self.database_paths = np.concatenate([mat['db_rgb'][0, 0] for mat in self.matStruct])
         
-        if self.img_time == 'allday':
-            self.queries_paths = np.concatenate([np.concatenate((mat['q_t_morning'][0, 0], mat['q_t_afternoon'][0, 0], mat['q_t_evening'][0, 0])) if self.dataset_type == 'sthereo' else np.concatenate((mat['q_t_morning'][0, 0], mat['q_t_clearsky'][0, 0], mat['q_t_rainy'][0, 0], mat['q_t_nighttime'][0, 0])) for mat in self.matStruct])
-        elif self.img_time == 'daytime':
-            self.queries_paths = np.concatenate([np.concatenate((mat['q_t_morning'][0, 0], mat['q_t_afternoon'][0, 0])) if self.dataset_type == 'sthereo' else np.concatenate((mat['q_t_morning'][0, 0], mat['q_t_clearsky'][0, 0], mat['q_t_rainy'][0, 0])) for mat in self.matStruct])
-        elif self.img_time == 'nighttime':
-            self.queries_paths = np.concatenate([mat['q_t_evening'][0, 0] if self.dataset_type == 'sthereo' else mat['q_t_nighttime'][0, 0] for mat in self.matStruct])
-        elif self.img_time == 'latetime':
-            self.queries_paths = np.concatenate([np.concatenate((mat['q_t_afternoon'][0, 0], mat['q_t_evening'][0, 0])) if self.dataset_type == 'sthereo' else mat['q_t_nighttime'][0, 0] for mat in self.matStruct])
+        if self.dataset_type in ['ms2', 'sthereo']:
+            if self.img_time == 'allday':
+                self.queries_paths = np.concatenate([np.concatenate((mat['q_t_morning'][0, 0], mat['q_t_afternoon'][0, 0], mat['q_t_evening'][0, 0])) if self.dataset_type == 'sthereo' else np.concatenate((mat['q_t_morning'][0, 0], mat['q_t_clearsky'][0, 0], mat['q_t_rainy'][0, 0], mat['q_t_nighttime'][0, 0])) for mat in self.matStruct])
+            elif self.img_time == 'daytime':
+                self.queries_paths = np.concatenate([np.concatenate((mat['q_t_morning'][0, 0], mat['q_t_afternoon'][0, 0])) if self.dataset_type == 'sthereo' else np.concatenate((mat['q_t_morning'][0, 0], mat['q_t_clearsky'][0, 0], mat['q_t_rainy'][0, 0])) for mat in self.matStruct])
+            elif self.img_time == 'nighttime':
+                self.queries_paths = np.concatenate([mat['q_t_evening'][0, 0] if self.dataset_type == 'sthereo' else mat['q_t_nighttime'][0, 0] for mat in self.matStruct])
+            elif self.img_time == 'latetime':
+                self.queries_paths = np.concatenate([np.concatenate((mat['q_t_afternoon'][0, 0], mat['q_t_evening'][0, 0])) if self.dataset_type == 'sthereo' else mat['q_t_nighttime'][0, 0] for mat in self.matStruct])
+        elif self.dataset_type in ['nsavp']:
+            if 'r0' in self.args.sequences:
+                self.queries_paths = np.concatenate(
+                    [np.concatenate((mat['q_t_FA0'][0, 0], mat['q_t_FN0'][0, 0], mat['q_t_FS0'][0, 0])) for mat in self.matStruct])
+            elif 'r1' in self.args.sequences:
+                self.queries_paths = np.concatenate(
+                    [np.concatenate((mat['q_t_FA0'][0, 0], mat['q_t_DA0'][0, 0])) for mat in self.matStruct])
+            else: raise Exception("What?")
+        
 
         # 통합된 경로 리스트 및 개수 정의
         self.images_paths = list(self.database_paths) + list(self.queries_paths)
         self.database_num = len(self.database_paths)
         self.queries_num  = len(self.queries_paths)
+        if self.dataset_type=='ms2':
+            self.min_temp, self.max_temp = -20, 60
 
     # 6. OpenCV로 읽은 이미지를 PIL 포맷으로 변환 (기존 BaseDataset과의 호환성을 위해)
     def get_rgb_img(self, path):
@@ -123,42 +145,38 @@ class BaseDataset(data.Dataset):
         if self.dataset_type == 'sthereo':
             img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
             img = cv2.cvtColor(img, cv2.COLOR_BAYER_BG2RGB)
-        else:  # ms2
+        elif self.dataset_type == 'ms2':  # ms2
             img = cv2.imread(path, cv2.IMREAD_COLOR)
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        elif self.dataset_type == 'nsavp':
+            img = cv2.imread(path, cv2.IMREAD_COLOR)
+            img = img[195:820, 230:1010]
+        else: raise Exception("ERROR datasets_ws.py :: get_rgb_img")
         
-        if hasattr(self.args, 'is_rgb_grey_scale') and self.args.is_rgb_grey_scale:
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-            img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-            
         return Image.fromarray(img)
 
-    # def get_thermal_img(self, path):
-    #     path = str(path).strip("[]'")
-    #     img = cv2.imread(path, cv2.IMREAD_ANYDEPTH)
-    #     img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-    #     img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-    #     return Image.fromarray(img)
-
     def get_thermal_img(self, path):
+        path = str(path).strip("[]'")
         img = cv2.imread(path, cv2.IMREAD_ANYDEPTH)
-        if self.dataset_type=='ms2':
+        if self.dataset_type == 'ms2':
             img = Raw2Celsius(img)
             img = np.clip(img, self.min_temp, self.max_temp)
-
+        elif self.dataset_type == 'nsavp':
+            img = np.clip(img, 22500, 25000).astype(np.float32)                                                             
+            img = (img - 22500) / 2500.0 * 255.0
         img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-        return img
-    
+        return Image.fromarray(img)
+
     def __getitem__(self, index):
         # Database 인덱스면 RGB, Query 인덱스면 Thermal 호출
         if index < self.database_num:
             img = self.get_rgb_img(self.images_paths[index])
+            img = base_transform(img)
         else:
             img = self.get_thermal_img(self.images_paths[index])
-            
-        img = base_transform(img)
-        
+            img = base_transform(img)
+        # import torchvision; torchvision.utils.save_image(img.float() / 255.0 if img.max() > 1 else img, 'debug_image.png')
         if self.test_method == "hard_resize":
             img = transforms.functional.resize(img, self.resize)
         else:
@@ -212,7 +230,7 @@ class BaseDataset(data.Dataset):
                 time_conds = ['evening']
             elif self.img_time == 'latetime':
                 time_conds = ['afternoon', 'evening']
-        else:  # ms2
+        elif self.dataset_type == 'ms2':
             if self.img_time == 'allday':
                 time_conds = ['morning', 'clearsky', 'rainy', 'nighttime']
             elif self.img_time == 'daytime':
@@ -221,6 +239,13 @@ class BaseDataset(data.Dataset):
                 time_conds = ['nighttime']
             elif self.img_time == 'latetime':
                 time_conds = ['nighttime']
+        elif self.dataset_type == 'nsavp':
+            if 'r0' in self.args.sequences:
+                time_conds = ["FA0", "FN0", "FS0"]
+            elif 'r1' in self.args.sequences:
+                time_conds = ["FA0", "DA0"]
+            else: raise Exception("What?")
+                
 
         for mat, seq in zip(self.matStruct, self.args.sequences):
             for cond in time_conds:
