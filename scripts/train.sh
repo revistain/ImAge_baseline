@@ -15,6 +15,7 @@ python3 train.py \
     --queries_per_epoch=2000 \
     --margin=0.1 \
     --insert_te=8 \
-    --foundation_model_path=/home/jwkim/workspace/benchmark_THR2RGB/pretrained/dinov2_vitb14_reg4_pretrain.pth
+    --foundation_model_path=/home/jwkim/workspace/benchmark_THR2RGB/pretrained/dinov2_vitb14_reg4_pretrain.pth \
+    --comment "ImAge-DINOv2_b-MutualRGBInit-thermalAdapter"
 
 # Scene 종류 : ['Campus', 'Residential', 'Urban', 'KAIST', 'SNU', 'Valley', 'r0', 'r1'] 

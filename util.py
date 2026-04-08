@@ -1,10 +1,10 @@
-
-import re
+import os
 import torch
 import shutil
 import logging
 import numpy as np
 from collections import OrderedDict
+from datetime import datetime
 from os.path import join
 
 def save_checkpoint(args, state, is_best, filename):
@@ -60,3 +60,45 @@ def Raw2Celsius(Raw):
     O = -88.539
     Celsius = B / np.log(R / (Raw - O) + F) - 273.15
     return Celsius
+
+def save_files(path):
+    import subprocess
+    models_dir = os.path.join(path, "save_codes")
+    if not os.path.exists(models_dir):
+        os.makedirs(models_dir)
+    
+    file_paths = ['model','Dataset','scripts','commons.py','datasets_ws.py','eval.py',
+                  'loss.py',' inference.py',' parser.py',
+                  'train.py',' util.py']
+
+    for file_path in file_paths:
+        if os.path.exists(file_path):
+            if not os.path.exists(os.path.join(models_dir, file_path)):
+                subprocess.run(['cp', '-r', file_path, models_dir])
+            else:
+                print("File already exists", file_path)
+        else:
+            print("Can't find file")
+                
+cached_timestamp = None
+def get_timestamp():
+    global cached_timestamp
+    if cached_timestamp is None:
+        cached_timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+    return cached_timestamp
+
+def get_loss_warmup_scale(current_epoch, warmup_epochs, max_scale=5e-2):
+    """
+    current_epoch가 warmup_epochs에 도달할 때까지 
+    0.0에서 max_scale로 선형 증가합니다.
+    """
+    # 워밍업을 안 쓰는 경우 바로 최대값 반환
+    if warmup_epochs == 0:
+        return max_scale
+    
+    # 0.0 ~ 1.0 사이의 진행률(Ratio) 계산
+    ratio = float(current_epoch) / float(warmup_epochs)
+    ratio = min(1.0, max(0.0, ratio))
+    
+    # 진행률에 최대값을 곱해서 최종 가중치 스케일 반환
+    return ratio * max_scale

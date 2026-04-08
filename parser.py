@@ -10,7 +10,7 @@ def parse_arguments():
                         help="Number of triplets (query, pos, negs) in a batch. Each triplet consists of 12 images")
     parser.add_argument("--patience", type=int, default=20)
     parser.add_argument("--lr", type=float, default=0.00005, help="_")
-    parser.add_argument("--optim", type=str, default="adam", help="_", choices=["adam", "sgd"])
+    parser.add_argument("--optim", type=str, default="adamW", help="_", choices=["adam", "sgd", "adamW"])
     parser.add_argument("--epochs_num", type=int, default=20,
                         help="number of epochs to train for")
     parser.add_argument("--negs_num_per_query", type=int, default=10,
@@ -77,13 +77,14 @@ def parse_arguments():
     parser.add_argument("--datasets_folder", type=str, default=None, help="Path with all datasets")
     parser.add_argument("--dataset_name", type=str, default="pitts30k", help="Relative path of the dataset")
 
-    parser.add_argument("--save_dir", type=str, default="default",
+    parser.add_argument("--save_dir", type=str, default="logs",
                         help="Folder name of the current run (saved in ./logs/)")
     parser.add_argument("--train_seq", type=str, default="none", help="_", nargs="+", choices=["Campus", "Residential", "Urban", 'KAIST', 'SNU', 'Valley', 'r0', 'r1'])
     parser.add_argument("--test_seq", type=str, default="none", help="_", nargs="+", choices=["Campus", "Residential", "Urban", 'KAIST', 'SNU', 'Valley', 'r0', 'r1'])
     parser.add_argument("--img_time", type=str, default="allday",
                         choices=["allday", "daytime", "nighttime", "latetime"])
     parser.add_argument("--rgb_model_path", type=str, default="/home/jwkim/workspace/benchmark_THR2RGB/ImAge/ImAge_GSV.pth")
+    parser.add_argument("--comment", type=str, default="default")
     args = parser.parse_args()
     
     return args
