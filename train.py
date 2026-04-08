@@ -2,14 +2,17 @@
 import custom_wandb as cw
 import torch
 import logging
+import random
 import numpy as np
 from tqdm import tqdm,trange
 import multiprocessing
 from os.path import join
 from datetime import datetime
+import torch.nn.functional as F
 from torch.utils.data.dataloader import DataLoader
 torch.backends.cudnn.benchmark= True  # Provides a speedup
 
+import loss
 import util
 import test
 import math
@@ -17,19 +20,28 @@ import parser
 import commons
 import network
 import datasets_ws
-from torch.cuda.amp import GradScaler, autocast
 
 import warnings
 warnings.filterwarnings("ignore")
 
+BCS_loss = loss.BCS(lmbd=10)
+def set_seed(seed=42):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    np.random.seed(seed)
+    random.seed(seed)
+    
 def train_model(args):
     #### Creation of Datasets
     logging.debug(f"Loading dataset {args.dataset_name} from folder {args.datasets_folder}")
 
     ############################################################
     args.sequences = args.train_seq
-    triplets_ds = datasets_ws.TripletsDataset(args, args.datasets_folder, args.dataset_name, "train", args.negs_num_per_query)
-    logging.info(f"Train query set: {triplets_ds}")
+    lejepa_ds = datasets_ws.LeJEPADataset(args, args.datasets_folder, args.dataset_name, "train", args.negs_num_per_query)
+    logging.info(f"Train query set: {lejepa_ds}")
 
     test_sequences = args.test_seq
     val_ds_list = []
@@ -72,11 +84,11 @@ def train_model(args):
     if args.aggregator in ["netvlad"]:  # If using NetVLAD layer, initialize it
         args.features_dim = 768
         if not args.resume:
-            triplets_ds = datasets_ws.TripletsDataset(args, args.datasets_folder, "msls", "train", args.negs_num_per_query)
-            logging.info(f"Train query set: {triplets_ds}")
-            triplets_ds.is_inference = True
+            lejepa_ds = datasets_ws.LeJEPADataset(args, args.datasets_folder, "msls", "train", args.negs_num_per_query)
+            logging.info(f"Train query set: {lejepa_ds}")
+            lejepa_ds.is_inference = True
             pretrained_model = network.get_backbone(args)
-            model.module.agg.initialize_netvlad_layer(args, triplets_ds, pretrained_model.to(args.device)) 
+            model.module.agg.initialize_netvlad_layer(args, lejepa_ds, pretrained_model.to(args.device)) 
         args.features_dim = args.features_dim * 8
 
     logging.info(f"Output dimension of the model is {args.features_dim}")
@@ -87,7 +99,7 @@ def train_model(args):
     elif args.optim == "sgd":
         optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=0.001)
     elif args.optim == "adamW":
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=0.001)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=5e-2)
 
     #### Resume model, optimizer, and other training parameters
     if args.resume:
@@ -109,49 +121,75 @@ def train_model(args):
         logging.info(f"Start training epoch: {epoch_num:02d}")
         epoch_start_time = datetime.now()
         epoch_losses = []
+        epoch_inv_losses = []
+        epoch_sig_losses = []
+        epoch_cosines = []
 
         for loop_num in range(loops_num):
             logging.debug(f"Cache refresh: {loop_num + 1} / {loops_num}")
 
-            triplets_ds.is_inference = True
-            triplets_ds.compute_triplets(args, model)
-            triplets_ds.is_inference = False
+            lejepa_ds.is_inference = True
+            lejepa_ds.compute_triplets(args, model)
+            lejepa_ds.is_inference = False
 
-            triplets_dl = DataLoader(dataset=triplets_ds, num_workers=args.num_workers,
+            triplets_dl = DataLoader(dataset=lejepa_ds, num_workers=args.num_workers,
                                     batch_size=args.train_batch_size,
                                     collate_fn=datasets_ws.collate_fn,
                                     pin_memory=(args.device == "cuda"),
                                     drop_last=True)
 
             model = model.train()
-            for images, triplets_local_indexes, _ in tqdm(triplets_dl, ncols=100):
-                loss = torch.tensor(0.0, device=args.device)
-                
+            for batch in tqdm(triplets_dl, ncols=100):
+                images, pos_img, views = batch
                 optimizer.zero_grad()
-                descriptors = model(images.to(args.device), flags)
-                triplets_local_indexes = torch.transpose(
-                    triplets_local_indexes.view(args.train_batch_size, args.negs_num_per_query, 3), 1, 0)
-                for triplets in triplets_local_indexes:
-                    queries_indexes, positives_indexes, negatives_indexes = triplets.T
-                    loss += GlobalTriplet(
-                        descriptors[queries_indexes],
-                        descriptors[positives_indexes],
-                        descriptors[negatives_indexes],
-                    )
-                loss /= (args.train_batch_size * args.negs_num_per_query)
-                del descriptors
+
+                with torch.no_grad():
+                    x_rgb = model.module._forward_impl(pos_img.to(args.device), is_thermal=False)
+                x_ir = model.module._forward_impl(torch.cat([images, views], dim=0).to(args.device), is_thermal=True)
+
+                pos_z = model.module.projector(x_rgb)
+                ir_z = model.module.projector(x_ir)
+                
+                ir_global = ir_z[:args.train_batch_size]
+                all_z = torch.cat([pos_z, ir_z])
+                num_views = ir_z.size(0) // pos_z.size(0)
+                pos_z_targets = pos_z.repeat(num_views, 1)
+                inv_loss = F.mse_loss(pos_z_targets, ir_z).mean()
+
+                sigreg_loss = BCS_loss(all_z, return_sim=False, return_sigreg=True)
+                sigreg_loss = sigreg_loss['bcs_loss']
+                BCS_loss.step += 1
+
+                loss = inv_loss + 10 * sigreg_loss
 
                 loss.backward()
                 optimizer.step()
 
                 epoch_losses.append(loss.item())
+                epoch_inv_losses.append(inv_loss.item())
+                epoch_sig_losses.append(sigreg_loss.item())
+
+                with torch.no_grad():
+                    cos = F.cosine_similarity(pos_z, ir_global, dim=-1).mean().item()
+                    epoch_cosines.append(cos)
+
                 del loss
 
             logging.debug(f"Epoch[{epoch_num:02d}]({loop_num + 1}/{loops_num}): "
-                        f"average triplet loss = {np.mean(epoch_losses):.4f}")
+                        f"avg loss={np.mean(epoch_losses):.4f}  "
+                        f"inv={np.mean(epoch_inv_losses):.4f}  "
+                        f"sig={np.mean(epoch_sig_losses):.4f}")
 
         logging.info(f"Finished epoch {epoch_num:02d} in {str(datetime.now() - epoch_start_time)[:-7]}, "
-                    f"average epoch triplet loss = {np.mean(epoch_losses):.4f}")
+                    f"avg loss={np.mean(epoch_losses):.4f}  "
+                    f"inv={np.mean(epoch_inv_losses):.4f}  "
+                    f"sig={np.mean(epoch_sig_losses):.4f}  "
+                    f"cos={np.mean(epoch_cosines):.4f}")
+
+        cw.wandb_log("loss", "total", np.mean(epoch_losses))
+        cw.wandb_log("loss", "invariance", np.mean(epoch_inv_losses))
+        cw.wandb_log("loss", "sigreg", np.mean(epoch_sig_losses))
+        cw.wandb_log("lejepa", "matched_cos", np.mean(epoch_cosines))
 
         # Compute recalls on all validation sequences
         all_r1, all_r5 = [], []
@@ -197,6 +235,7 @@ def train_model(args):
         
 if __name__ == "__main__":
     #### Initial setup: parser, logging...
+    set_seed()
     args = parser.parse_arguments()
     cw.wandb_init(args, name=args.comment)
     start_time = datetime.now()

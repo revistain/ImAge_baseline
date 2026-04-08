@@ -27,10 +27,20 @@ class VPRmodel(nn.Module):
         # Thermal backbone: blocks 0~(freeze_te-1) frozen, blocks freeze_te~11 trainable
         self.backbone_thermal, agg_tokens_thermal = get_backbone_thermal(args)
         self.learnable_agg_tokens_thermal = nn.Parameter(agg_tokens_thermal.clone())
-        self.learnable_agg_tokens_thermal.requires_grad = True
+        self.learnable_agg_tokens_thermal.requires_grad = False
 
-        feat_dim = self.backbone_rgb.embed_dim * args.num_learnable_aggregation_tokens  # 768*8=6144
-
+        # [leJEPA]
+        features_dim = args.num_learnable_aggregation_tokens * self.backbone_thermal.embed_dim
+        self.projector = nn.Sequential(
+            nn.Linear(features_dim, 1024),
+            nn.BatchNorm1d(1024),
+            nn.ReLU(),
+            nn.Linear(1024, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Linear(256, 64),
+        )
+        
     def _get_backbone_features(self, x: torch.Tensor, is_thermal: bool) -> torch.Tensor:
         backbone   = self.backbone_thermal   if is_thermal else self.backbone_rgb
         agg_tokens = self.learnable_agg_tokens_thermal if is_thermal else self.learnable_agg_tokens_rgb

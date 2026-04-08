@@ -26,28 +26,10 @@ base_transform = transforms.Compose([
 ])
 
 def collate_fn(batch):
-    """Creates mini-batch tensors from the list of tuples (images, 
-        triplets_local_indexes, triplets_global_indexes).
-        triplets_local_indexes are the indexes referring to each triplet within images.
-        triplets_global_indexes are the global indexes of each image.
-    Args:
-        batch: list of tuple (images, triplets_local_indexes, triplets_global_indexes).
-            considering each query to have 10 negatives (negs_num_per_query=10):
-            - images: torch tensor of shape (12, 3, h, w).
-            - triplets_local_indexes: torch tensor of shape (10, 3).
-            - triplets_global_indexes: torch tensor of shape (12).
-    Returns:
-        images: torch tensor of shape (batch_size*12, 3, h, w).
-        triplets_local_indexes: torch tensor of shape (batch_size*10, 3).
-        triplets_global_indexes: torch tensor of shape (batch_size, 12).
-    """
-    images                  = torch.cat([e[0] for e in batch])
-    triplets_local_indexes  = torch.cat([e[1][None] for e in batch])
-    triplets_global_indexes = torch.cat([e[2][None] for e in batch])
-    for i, (local_indexes, global_indexes) in enumerate(zip(triplets_local_indexes, triplets_global_indexes)):
-        local_indexes += len(global_indexes) * i  # Increment local indexes by offset (len(global_indexes) is 12)
-    return images, torch.cat(tuple(triplets_local_indexes)), triplets_global_indexes
-
+    images  = torch.cat([e[0][None] for e in batch])
+    pos_view  = torch.cat([e[1][None] for e in batch])
+    local_views = torch.cat([e[2][None] for e in batch])
+    return images, pos_view, local_views
 
 class BaseDataset(data.Dataset):
     """Dataset with images from database and queries, used for inference (testing and building cache).
@@ -256,7 +238,49 @@ class BaseDataset(data.Dataset):
 
         return np.array(modalities), np.array(seq_labels), np.array(conditions)
 
-class TripletsDataset(BaseDataset):
+class RAMEfficient2DMatrix:
+    """This class behaves similarly to a numpy.ndarray initialized
+    with np.zeros(), but is implemented to save RAM when the rows
+    within the 2D array are sparse. In this case it's needed because
+    we don't always compute features for each image, just for few of
+    them"""
+    def __init__(self, shape, dtype=np.float32):
+        self.shape = shape
+        self.dtype = dtype
+        self.matrix = [None] * shape[0]
+    def __setitem__(self, indexes, vals):
+        assert vals.shape[1] == self.shape[1], f"{vals.shape[1]} {self.shape[1]}"
+        for i, val in zip(indexes, vals):
+            self.matrix[i] = val.astype(self.dtype, copy=False)
+    def __getitem__(self, index):
+        if hasattr(index, "__len__"):
+            return np.array([self.matrix[i] for i in index])
+        else:
+            return self.matrix[index]
+
+class RAMEfficient4DMatrix:
+    """This class behaves similarly to a numpy.ndarray initialized
+    with np.zeros(), but is implemented to save RAM when the rows
+    within the 3D array are sparse. In this case it's needed because
+    we don't always compute features for each image, just for few of
+    them"""
+    def __init__(self, shape, dtype=np.float32):
+        self.shape = shape
+        self.dtype = dtype
+        self.matrix = [None] * shape[0]
+    def __setitem__(self, indexes, vals):
+        assert vals.shape[1] == self.shape[1], f"{vals.shape[1]} {self.shape[1]}"
+        assert vals.shape[2] == self.shape[2], f"{vals.shape[2]} {self.shape[2]}"
+        assert vals.shape[3] == self.shape[3], f"{vals.shape[3]} {self.shape[3]}"
+        for i, val in zip(indexes, vals):
+            self.matrix[i] = val.astype(self.dtype, copy=False)
+    def __getitem__(self, index):
+        if hasattr(index, "__len__"):
+            return np.array([self.matrix[i] for i in index])
+        else:
+            return self.matrix[index]
+
+class LeJEPADataset(BaseDataset):
     """Dataset used for training, it is used to compute the triplets 
     with TripletsDataset.compute_triplets() with various mining methods.
     If is_inference == True, uses methods of the parent class BaseDataset,
@@ -279,16 +303,22 @@ class TripletsDataset(BaseDataset):
         ])
         
         self.query_transform = transforms.Compose([
-            transforms.ColorJitter(brightness=args.brightness)       if args.brightness          != None else identity_transform,
-            transforms.ColorJitter(contrast=args.contrast)           if args.contrast            != None else identity_transform,
-            transforms.ColorJitter(saturation=args.saturation)       if args.saturation          != None else identity_transform,
-            transforms.ColorJitter(hue=args.hue)                     if args.hue                 != None else identity_transform,
-            transforms.RandomPerspective(args.rand_perspective)      if args.rand_perspective    != None else identity_transform,
-            transforms.RandomResizedCrop(size=self.resize, scale=(1-args.random_resized_crop, 1))  \
-                                                                        if args.random_resized_crop != None else identity_transform,
-            transforms.RandomRotation(degrees=args.random_rotation)  if args.random_rotation     != None else identity_transform,
+            transforms.ColorJitter(contrast=(0.5, 1.0)) \
+                if args.contrast != None else identity_transform,
+            transforms.RandomResizedCrop(size=self.resize, scale=(1-args.random_resized_crop, 1)) \
+                if args.random_resized_crop != None else identity_transform,
+            #######################################################
             self.resized_transform,
         ])
+
+        # self.views_transform = transforms.Compose([
+        #     transforms.ColorJitter(contrast=(0.5, 1.0)) \
+        #         if args.contrast != None else identity_transform,
+        #     transforms.RandomResizedCrop(size=self.resize, scale=(0.3, 0.8)) \
+        #         if args.random_resized_crop != None else identity_transform,
+        #     #######################################################
+        #     self.resized_transform,
+        # ])
         
         # Find hard_positives_per_query, which are within train_positives_dist_threshold (10 meters)
         knn = NearestNeighbors(n_jobs=-1)
@@ -317,39 +347,28 @@ class TripletsDataset(BaseDataset):
         # Recompute images_paths and queries_num because some queries might have been removed
         self.images_paths = list(self.database_paths) + list(self.queries_paths)
         self.queries_num = len(self.queries_paths)
-        
-        # msls_weighted refers to the mining presented in MSLS paper's supplementary.
-        # Basically, images from uncommon domains are sampled more often. Works only with MSLS dataset.
-        if self.mining == "msls_weighted":
-            notes = [p.split("@")[-2] for p in self.queries_paths]
-            try:
-                night_indexes = np.where(np.array([n.split("_")[0] == "night" for n in notes]))[0]
-                sideways_indexes = np.where(np.array([n.split("_")[1] == "sideways" for n in notes]))[0]
-            except IndexError:
-                raise RuntimeError("You're using msls_weighted mining but this dataset " +
-                                   "does not have night/sideways information. Are you using Mapillary SLS?")
-            self.weights = np.ones(self.queries_num)
-            assert len(night_indexes) != 0 and len(sideways_indexes) != 0, \
-                "There should be night and sideways images for msls_weighted mining, but there are none. Are you using Mapillary SLS?"
-            self.weights[night_indexes] += self.queries_num / len(night_indexes)
-            self.weights[sideways_indexes] += self.queries_num / len(sideways_indexes)
-            self.weights /= self.weights.sum()
-            logging.info(f"#sideways_indexes [{len(sideways_indexes)}/{self.queries_num}]; " +
-                         "#night_indexes; [{len(night_indexes)}/{self.queries_num}]")
 
     def __getitem__(self, index):
+        # =========================================================
+        # 1. 고정된 역할: Query는 무조건 IR, Positive는 무조건 RGB
+        # =========================================================
         if self.is_inference:
-            # At inference time return the single image. This is used for caching or computing NetVLAD's clusters
             return super().__getitem__(index)
-        query_index, best_positive_index, neg_indexes = torch.split(self.triplets_global_indexes[index], (1,1,self.negs_num_per_query))
-        query     = self.query_transform(self.get_thermal_img(self.queries_paths[query_index.item()]))
-        positive  = self.resized_transform(self.get_rgb_img(self.database_paths[best_positive_index.item()]))
-        negatives = [self.resized_transform(self.get_rgb_img(self.database_paths[i.item()])) for i in neg_indexes]
-        images = torch.stack((query, positive, *negatives), 0)
-        triplets_local_indexes = torch.empty((0,3), dtype=torch.int)
-        for neg_num in range(len(neg_indexes)):
-            triplets_local_indexes = torch.cat((triplets_local_indexes, torch.tensor([0,1,2+neg_num]).reshape(1,3)))
-        return images, triplets_local_indexes, self.triplets_global_indexes[index]
+        
+        query_index, best_positive_index, _ = torch.split(self.triplets_global_indexes[index], (1,1,self.negs_num_per_query))
+        query_img = self.get_thermal_img(self.queries_paths[query_index.item()])
+        pos_img = self.get_rgb_img(self.database_paths[best_positive_index.item()])
+
+        # 증강(Transform) 적용
+        if self.query_transform: 
+            views = [self.query_transform(query_img) for _ in range(2)]
+            query_img = views[0]
+            views = views[1]
+        else: 
+            query_img = self.resized_transform(query_img)
+        pos_img = self.resized_transform(pos_img)
+        
+        return query_img, pos_img, views
     
     def __len__(self):
         if self.is_inference:
@@ -357,7 +376,7 @@ class TripletsDataset(BaseDataset):
             return super().__len__()
         else:
             return len(self.triplets_global_indexes)
-    
+        
     def compute_triplets(self, args, model):
         self.is_inference = True
         if self.mining == "full":
@@ -366,6 +385,7 @@ class TripletsDataset(BaseDataset):
             self.compute_triplets_partial(args, model)
         elif self.mining == "random":
             self.compute_triplets_random(args, model)
+        else: raise Exception("?")
   
     @staticmethod
     def compute_cache(args, model, subset_ds, cache_shape):
@@ -479,8 +499,6 @@ class TripletsDataset(BaseDataset):
         # Take 1000 random queries
         if self.mining == "partial":
             sampled_queries_indexes = np.random.choice(self.queries_num, args.cache_refresh_rate, replace=False)
-        elif self.mining == "msls_weighted":  # Pick night and sideways queries with higher probability
-            sampled_queries_indexes = np.random.choice(self.queries_num, args.cache_refresh_rate, replace=False, p=self.weights)
         
         # Sample 1000 random database images for the negatives
         neg_sample_size = min(self.neg_samples_num, self.database_num)                                                                                                           
@@ -509,45 +527,3 @@ class TripletsDataset(BaseDataset):
             self.triplets_global_indexes.append((query_index, best_positive_index, *neg_indexes))
         # self.triplets_global_indexes is a tensor of shape [1000, 12]
         self.triplets_global_indexes = torch.tensor(self.triplets_global_indexes)
-
-class RAMEfficient2DMatrix:
-    """This class behaves similarly to a numpy.ndarray initialized
-    with np.zeros(), but is implemented to save RAM when the rows
-    within the 2D array are sparse. In this case it's needed because
-    we don't always compute features for each image, just for few of
-    them"""
-    def __init__(self, shape, dtype=np.float32):
-        self.shape = shape
-        self.dtype = dtype
-        self.matrix = [None] * shape[0]
-    def __setitem__(self, indexes, vals):
-        assert vals.shape[1] == self.shape[1], f"{vals.shape[1]} {self.shape[1]}"
-        for i, val in zip(indexes, vals):
-            self.matrix[i] = val.astype(self.dtype, copy=False)
-    def __getitem__(self, index):
-        if hasattr(index, "__len__"):
-            return np.array([self.matrix[i] for i in index])
-        else:
-            return self.matrix[index]
-
-class RAMEfficient4DMatrix:
-    """This class behaves similarly to a numpy.ndarray initialized
-    with np.zeros(), but is implemented to save RAM when the rows
-    within the 3D array are sparse. In this case it's needed because
-    we don't always compute features for each image, just for few of
-    them"""
-    def __init__(self, shape, dtype=np.float32):
-        self.shape = shape
-        self.dtype = dtype
-        self.matrix = [None] * shape[0]
-    def __setitem__(self, indexes, vals):
-        assert vals.shape[1] == self.shape[1], f"{vals.shape[1]} {self.shape[1]}"
-        assert vals.shape[2] == self.shape[2], f"{vals.shape[2]} {self.shape[2]}"
-        assert vals.shape[3] == self.shape[3], f"{vals.shape[3]} {self.shape[3]}"
-        for i, val in zip(indexes, vals):
-            self.matrix[i] = val.astype(self.dtype, copy=False)
-    def __getitem__(self, index):
-        if hasattr(index, "__len__"):
-            return np.array([self.matrix[i] for i in index])
-        else:
-            return self.matrix[index]
