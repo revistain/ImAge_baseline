@@ -150,7 +150,7 @@ class BaseDataset(data.Dataset):
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         elif self.dataset_type == 'nsavp':
             img = cv2.imread(path, cv2.IMREAD_COLOR)
-            img = img[195:820, 230:1010]
+            img = img[196:820, 230:1010]
         else: raise Exception("ERROR datasets_ws.py :: get_rgb_img")
         
         return Image.fromarray(img)
@@ -176,7 +176,7 @@ class BaseDataset(data.Dataset):
         else:
             img = self.get_thermal_img(self.images_paths[index])
             img = base_transform(img)
-        # import torchvision; torchvision.utils.save_image(img.float() / 255.0 if img.max() > 1 else img, 'debug_image.png')
+            
         if self.test_method == "hard_resize":
             img = transforms.functional.resize(img, self.resize)
         else:

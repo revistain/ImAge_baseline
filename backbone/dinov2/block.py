@@ -22,6 +22,19 @@ from backbone.dinov2.mlp import Mlp
 
 logger = logging.getLogger("dinov2")
 
+import torch.nn.functional as F
+class VanillaAdapter(nn.Module):
+    """Bottleneck adapter: dim → dim//2 → dim (ReLU, no skip).
+    Zero-init D_fc2 so adapter starts as identity.
+    """
+    def __init__(self, fc_in_channels: int, in_channels: int) -> None:
+        super().__init__()
+        self.D_fc1 = nn.Linear(fc_in_channels, in_channels)
+        self.D_fc2 = nn.Linear(in_channels, fc_in_channels)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.D_fc2(F.relu(self.D_fc1(x), inplace=True))
+
 try:
     from xformers.ops import fmha
     from xformers.ops import scaled_index_add, index_select_cat
@@ -48,6 +61,7 @@ class Block(nn.Module):
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         attn_class: Callable[..., nn.Module] = Attention,
         ffn_layer: Callable[..., nn.Module] = Mlp,
+        use_adapter: bool = False,
     ) -> None:
         super().__init__()
         # print(f"biases: qkv: {qkv_bias}, proj: {proj_bias}, ffn: {ffn_bias}")
@@ -76,12 +90,15 @@ class Block(nn.Module):
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
         self.sample_drop_ratio = drop_path
+        self.adapter = VanillaAdapter(768, 768 // 2) if use_adapter else None
 
     def forward(self, x: Tensor) -> Tensor:
         def attn_residual_func(x: Tensor) -> Tensor:
             return self.ls1(self.attn(self.norm1(x))[0])
 
         def ffn_residual_func(x: Tensor) -> Tensor:
+            if self.adapter is not None:
+                return self.ls2(self.mlp(self.norm2(x)) + self.drop_path2(0.2 * self.adapter(self.norm2(x))))
             return self.ls2(self.mlp(self.norm2(x)))
 
         if self.training and self.sample_drop_ratio > 0.1:
@@ -207,6 +224,8 @@ class NestedTensorBlock(Block):
         if self.training and self.sample_drop_ratio > 0.0:
 
             def attn_residual_func(x: Tensor, attn_bias=None) -> Tensor:
+                if self.adapter is not None:
+                    return self.mlp(self.norm2(x)) + 0.2 * self.adapter(self.norm2(x))
                 return self.attn(self.norm1(x), attn_bias=attn_bias)
 
             def ffn_residual_func(x: Tensor, attn_bias=None) -> Tensor:
@@ -231,6 +250,8 @@ class NestedTensorBlock(Block):
                 return self.ls1(self.attn(self.norm1(x), attn_bias=attn_bias))
 
             def ffn_residual_func(x: Tensor, attn_bias=None) -> Tensor:
+                if self.adapter is not None:
+                    return self.ls2(self.mlp(self.norm2(x)) + 0.2 * self.adapter(self.norm2(x)))
                 return self.ls2(self.mlp(self.norm2(x)))
 
             attn_bias, x = get_attn_bias_and_cat(x_list)

@@ -11,16 +11,15 @@ torch.backends.cudnn.benchmark= True  # Provides a speedup
 
 import util
 import test
+import math
 import parser
 import commons
-import datasets_ws
 import network
-import math
+import datasets_ws
 from torch.cuda.amp import GradScaler, autocast
 
 import warnings
 warnings.filterwarnings("ignore")
-import os
 
 #### Initial setup: parser, logging...
 args = parser.parse_arguments()
@@ -59,11 +58,6 @@ for seq in test_sequences:
 args.sequences = args.train_seq
 ############################################################
 
-# val_ds0 = datasets_ws.BaseDataset(args, args.eval_datasets_folder, "pitts30k", "val")
-# logging.info(f"Val set0: {val_ds0}")
-# val_ds1 = datasets_ws.BaseDataset(args, args.eval_datasets_folder, "msls", "val")
-# logging.info(f"Val set1: {val_ds1}")
-
 #### Initialize model
 model = network.VPRmodel(args)
 model = model.to(args.device)
@@ -73,10 +67,12 @@ model = torch.nn.DataParallel(model)
 total_params = sum(p.numel() for p in model.parameters())
 trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 aggregator_params = sum(p.numel() for p in model.module.aggregator.parameters()) if model.module.aggregator else 0
+adapter_params = sum(p.numel() for n, p in model.module.backbone_thermal.named_parameters() if 'adapter' in n)
 
 print(f"The entire parameters: {total_params / 1e6:.2f}M")
 print(f"The trainable parameters: {trainable_params / 1e6:.2f}M")
 print(f"The aggregator parameters: {aggregator_params / 1e6:.2f}M")
+print(f"The adapater parameters: {adapter_params / 1e6:.2f}M")
 
 #### Initialize agg tokens
 if not args.aggregator:
@@ -100,19 +96,11 @@ if args.optim == "adam":
 elif args.optim == "sgd":
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=0.001)
 
+
 #### Resume model, optimizer, and other training parameters
 if args.resume:
     model, optimizer, best_r1_r5, start_epoch_num, not_improved_num = util.resume_train(args, model, optimizer)
     logging.info(f"Resuming from epoch {start_epoch_num} with best (R@1 + R@5) {best_r1_r5:.1f}")
-# elif args.finetune:
-#     # 모델 weight만 로드 (epoch/optimizer 상태는 새로 시작)
-#     ckpt = torch.load(args.finetune, map_location=args.device, weights_only=False)
-#     sd   = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-#     if list(sd.keys())[0].startswith('module.'):
-#         sd = {k.replace('module.', ''): v for k, v in sd.items()}
-#     model.module.load_state_dict(sd)
-#     logging.info(f"Finetuning from {args.finetune} (epoch 0, optimizer reset)")
-#     best_r1_r5 = start_epoch_num = not_improved_num = 0
 else:
     best_r1_r5 = start_epoch_num = not_improved_num = 0
 

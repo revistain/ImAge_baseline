@@ -16,7 +16,7 @@ class VPRmodel(nn.Module):
         self.aggregator_name = args.aggregator
         self.aggregator = get_aggregator(args)
         self.num_learnable_aggregation_tokens = args.num_learnable_aggregation_tokens
-        self.insertion_pos = args.freeze_te
+        self.insertion_pos = args.insert_te
         self.norm_transform = v2.Compose([v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
         
         # RGB backbone: GSV pretrained, fully frozen
@@ -69,7 +69,6 @@ class VPRmodel(nn.Module):
             inv[thr_idx] = len(rgb_idx) + torch.arange(len(thr_idx), device=x.device)
             return feats[inv]
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 
 def get_aggregator(args):
@@ -93,7 +92,7 @@ def get_backbone_rgb(args):
     from backbone.vision_transformer import vit_small, vit_base, vit_large
     size = getattr(args, "backbone_size", "b")
     vit  = {"s": vit_small, "b": vit_base, "l": vit_large}[size]
-    rgb_backbone = vit(patch_size=14, img_size=518, init_values=1, block_chunks=0, num_register_tokens=4)
+    rgb_backbone = vit(patch_size=14, img_size=518, init_values=1, block_chunks=0, num_register_tokens=4, use_adapter=False)
 
     agg_tokens = None
     rgb_model_path = getattr(args, 'rgb_model_path', None)
@@ -114,14 +113,14 @@ def get_backbone_rgb(args):
     return rgb_backbone, agg_tokens
 
 def get_backbone_thermal(args):
-    """GSV pretrained로 초기화, blocks >= freeze_te 만 trainable. (adapter 없음)"""
+    """GSV pretrained로 초기화, blocks >= freeze_te 만 trainable."""
     import backbone.dinov2.block as dinoblock
     dinoblock.adapter_dim = None
 
     from backbone.vision_transformer import vit_small, vit_base, vit_large
     size = getattr(args, "backbone_size", "b")
     vit  = {"s": vit_small, "b": vit_base, "l": vit_large}[size]
-    thr_backbone = vit(patch_size=14, img_size=518, init_values=1, block_chunks=0, num_register_tokens=4)
+    thr_backbone = vit(patch_size=14, img_size=518, init_values=1, block_chunks=0, num_register_tokens=4, use_adapter=True)
 
     agg_tokens = None
     rgb_model_path = getattr(args, 'rgb_model_path', None)
@@ -137,12 +136,18 @@ def get_backbone_thermal(args):
 
     for p in thr_backbone.parameters():
         p.requires_grad = False
-    if args.freeze_te:
-        for name, child in thr_backbone.blocks.named_children():
-            if int(name) >= args.freeze_te:
-                for p in child.parameters():
-                    p.requires_grad = True
-        for p in thr_backbone.norm.parameters():
-            p.requires_grad = True
+        
+    for name, child in thr_backbone.blocks.named_children():
+        if args.freeze_te and int(name) >= args.freeze_te:
+            for p in child.parameters():
+                p.requires_grad = True
+    # for p in thr_backbone.norm.parameters():
+    #     p.requires_grad = True
+        
+    for name, param in thr_backbone.blocks.named_parameters():
+        if 'adapter' in name.lower():
+            param.requires_grad = True
+            
+
 
     return thr_backbone, agg_tokens
