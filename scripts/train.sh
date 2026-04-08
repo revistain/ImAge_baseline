@@ -1,5 +1,5 @@
 OMP_NUM_THREADS=4 \
-CUDA_VISIBLE_DEVICES=6 \
+CUDA_VISIBLE_DEVICES=5 \
 python3 train.py \
     --datasets_folder=/home/jwkim/workspace/benchmark_THR2RGB/Datasets \
     --dataset_name=ms2dataset \

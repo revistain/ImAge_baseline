@@ -1,3 +1,4 @@
+# import torchvision; torchvision.utils.save_image(tensor_image.cpu().detach(), 'debug_img.png')
 import custom_wandb as cw
 import torch
 import logging
@@ -23,7 +24,7 @@ warnings.filterwarnings("ignore")
 
 #### Initial setup: parser, logging...
 args = parser.parse_arguments()
-cw.wandb_init(args, name="ImAge-DINOv2_b-MutualRGBInit-thermalUnFreezed")
+cw.wandb_init(args, name="ImAge-DINOv2_b-MutualRGBInit-thermalAdapter")
 start_time = datetime.now()
 args.save_dir = join("logs", args.save_dir, start_time.strftime('%Y-%m-%d_%H-%M-%S'))
 commons.setup_logging(args.save_dir)
