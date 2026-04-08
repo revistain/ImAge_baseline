@@ -17,6 +17,8 @@ import parser
 import commons
 import network
 import datasets_ws
+import loss as loss_module
+from gap_aligner import GapAligner
 from torch.cuda.amp import GradScaler, autocast
 
 import warnings
@@ -105,6 +107,12 @@ if args.resume:
 else:
     best_r1_r5 = start_epoch_num = not_improved_num = 0
 
+#### Initialize GapAligner for Procrustes SVD alignment
+gap_aligner = GapAligner(k=50, pca_dim=256)
+loss_module.gap_aligner = gap_aligner
+loss_module.gap_loss_weight = args.gap_loss_weight
+logging.info(f"GapAligner initialized with k=50, pca_dim=256, loss_weight={loss_module.gap_loss_weight}")
+
 #### Training loop (MS2 triplets)
 GlobalTriplet = torch.nn.TripletMarginLoss(margin=args.margin, p=2, reduction="sum")
 loops_num = math.ceil(args.queries_per_epoch / args.cache_refresh_rate)
@@ -135,7 +143,7 @@ for epoch_num in range(start_epoch_num, args.epochs_num):
         model = model.train()
         for images, triplets_local_indexes, _ in tqdm(triplets_dl, ncols=100):
             loss = torch.tensor(0.0, device=args.device)
-            
+
             optimizer.zero_grad()
             descriptors = model(images.to(args.device), flags)
             triplets_local_indexes = torch.transpose(
@@ -148,6 +156,18 @@ for epoch_num in range(start_epoch_num, args.epochs_num):
                     descriptors[negatives_indexes],
                 )
             loss /= (args.train_batch_size * args.negs_num_per_query)
+
+            # Add gap alignment loss (Procrustes SVD)
+            if gap_aligner.W_thr is not None and loss_module.gap_loss_weight > 0.0:
+                thermal_idx = flags.nonzero(as_tuple=True)[0]
+                rgb_idx = (~flags).nonzero(as_tuple=True)[0]
+                if len(thermal_idx) > 0 and len(rgb_idx) > 0:
+                    # Take first thermal and first rgb in batch for alignment
+                    f_thr_batch = descriptors[thermal_idx]
+                    f_rgb_batch = descriptors[rgb_idx][:len(thermal_idx)]  # match count
+                    gap_loss = gap_aligner.loss(f_thr_batch, f_rgb_batch.detach())
+                    loss = loss + loss_module.gap_loss_weight * gap_loss
+
             del descriptors
 
             loss.backward()
@@ -161,6 +181,34 @@ for epoch_num in range(start_epoch_num, args.epochs_num):
 
     logging.info(f"Finished epoch {epoch_num:02d} in {str(datetime.now() - epoch_start_time)[:-7]}, "
                  f"average epoch triplet loss = {np.mean(epoch_losses):.4f}")
+
+    # Update GapAligner with training descriptors (Procrustes SVD alignment)
+    if gap_aligner is not None:
+        logging.info("Updating GapAligner with training descriptors...")
+        model.eval()
+        with torch.no_grad():
+            all_desc_rgb, all_desc_thr = [], []
+            # Create inference dataloader for all training images
+            triplets_ds.is_inference = True
+            infer_dl = DataLoader(dataset=triplets_ds, num_workers=args.num_workers,
+                                   batch_size=args.train_batch_size, pin_memory=(args.device == "cuda"))
+            for images, _, _ in tqdm(infer_dl, desc="  extract features", ncols=80, leave=False):
+                descs = model(images.to(args.device), flags)
+                thermal_idx = flags[:descs.shape[0]].nonzero(as_tuple=True)[0]
+                rgb_idx = (~flags[:descs.shape[0]]).nonzero(as_tuple=True)[0]
+                if len(thermal_idx) > 0:
+                    all_desc_thr.append(descs[thermal_idx].cpu().numpy())
+                if len(rgb_idx) > 0:
+                    all_desc_rgb.append(descs[rgb_idx].cpu().numpy())
+            triplets_ds.is_inference = False
+
+            if all_desc_rgb and all_desc_thr:
+                f_rgb = np.concatenate(all_desc_rgb, axis=0)
+                f_thr = np.concatenate(all_desc_thr, axis=0)
+                # Only update if we have enough samples
+                if len(f_rgb) > 10 and len(f_thr) > 10 and f_rgb.shape[1] == f_thr.shape[1]:
+                    gap_aligner.update(f_rgb, f_thr)
+                    logging.info(f"GapAligner updated with {len(f_rgb)} RGB and {len(f_thr)} Thermal descriptors")
 
     # Compute recalls on all validation sequences
     all_r1, all_r5 = [], []
