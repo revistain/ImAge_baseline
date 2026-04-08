@@ -17,7 +17,6 @@ import parser
 import commons
 import network
 import datasets_ws
-import loss as loss_module
 from gap_aligner import GapAligner
 from torch.cuda.amp import GradScaler, autocast
 
@@ -26,7 +25,7 @@ warnings.filterwarnings("ignore")
 
 #### Initial setup: parser, logging...
 args = parser.parse_arguments()
-cw.wandb_init(args, name="ImAge-DINOv2_b-MutualRGBInit-thermalAdapter")
+cw.wandb_init(args, name="ImAge-DINOv2_b-MutualRGBInit-thermalAdapter(agg_frozen)")
 start_time = datetime.now()
 args.save_dir = join("logs", args.save_dir, start_time.strftime('%Y-%m-%d_%H-%M-%S'))
 commons.setup_logging(args.save_dir)
@@ -48,12 +47,12 @@ val_ds_list = []
 test_ds_list = []
 
 for seq in test_sequences:
-    args.sequences = [seq]  
-    
+    args.sequences = [seq]
+
     val_ds0 = datasets_ws.BaseDataset(args, args.datasets_folder, args.dataset_name, "test")
     val_ds_list.append(val_ds0)
     logging.info(f"[Val - {seq}] Database: {val_ds0.database_num}, Queries: {val_ds0.queries_num}, Total: {len(val_ds0)}")
-    
+
     val_ds1 = datasets_ws.BaseDataset(args, args.datasets_folder, args.dataset_name, "test")
     test_ds_list.append(val_ds1)
     logging.info(f"[Test - {seq}] Database: {val_ds1.database_num}, Queries: {val_ds1.queries_num}, Total: {len(val_ds1)}")
@@ -88,7 +87,7 @@ if args.aggregator in ["netvlad"]:  # If using NetVLAD layer, initialize it
         logging.info(f"Train query set: {triplets_ds}")
         triplets_ds.is_inference = True
         pretrained_model = network.get_backbone(args)
-        model.module.agg.initialize_netvlad_layer(args, triplets_ds, pretrained_model.to(args.device)) 
+        model.module.agg.initialize_netvlad_layer(args, triplets_ds, pretrained_model.to(args.device))
     args.features_dim = args.features_dim * 8
 
 logging.info(f"Output dimension of the model is {args.features_dim}")
@@ -99,6 +98,10 @@ if args.optim == "adam":
 elif args.optim == "sgd":
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=0.001)
 
+#### Gap Aligner (Procrustes subspace alignment)
+gap_aligner = GapAligner(k=args.gap_k, pca_dim=256) if args.gap_lambda > 0 else None
+if gap_aligner is not None:
+    logging.info(f"GapAligner enabled: lambda={args.gap_lambda}, k={args.gap_k}, max_pairs={args.gap_max_pairs}")
 
 #### Resume model, optimizer, and other training parameters
 if args.resume:
@@ -107,11 +110,41 @@ if args.resume:
 else:
     best_r1_r5 = start_epoch_num = not_improved_num = 0
 
-#### Initialize GapAligner for Procrustes SVD alignment
-gap_aligner = GapAligner(k=50, pca_dim=256)
-loss_module.gap_aligner = gap_aligner
-loss_module.gap_loss_weight = args.gap_loss_weight
-logging.info(f"GapAligner initialized with k=50, pca_dim=256, loss_weight={loss_module.gap_loss_weight}")
+#### GapAligner pre-init (epoch 0에도 gap loss 적용)
+if gap_aligner is not None:
+    logging.info("Pre-initializing GapAligner before epoch 0...")
+    triplets_ds.is_inference = True
+    triplets_ds.compute_triplets(args, model)
+    triplets_ds.is_inference = False
+
+    init_dl = DataLoader(dataset=triplets_ds, num_workers=args.num_workers,
+                         batch_size=args.train_batch_size,
+                         collate_fn=datasets_ws.collate_fn,
+                         pin_memory=(args.device == "cuda"),
+                         drop_last=True)
+
+    thermal_flag = torch.ones(1, dtype=torch.bool)
+    rgb_flags = torch.zeros(1 + args.negs_num_per_query, dtype=torch.bool)
+    bundle_flags = torch.cat([thermal_flag, rgb_flags]).to(args.device)
+    flags = bundle_flags.repeat(args.train_batch_size)
+
+    init_thr, init_rgb, n_init = [], [], 0
+    model.eval()
+    with torch.no_grad():
+        for images, triplets_local_indexes, _ in init_dl:
+            if n_init >= args.gap_max_pairs:
+                break
+            descriptors = model(images.to(args.device), flags)
+            triplets_local_indexes = torch.transpose(
+                triplets_local_indexes.view(args.train_batch_size, args.negs_num_per_query, 3), 1, 0)
+            q_idx = triplets_local_indexes[0, :, 0]
+            p_idx = triplets_local_indexes[0, :, 1]
+            init_thr.append(descriptors[q_idx].float().cpu())
+            init_rgb.append(descriptors[p_idx].float().cpu())
+            n_init += q_idx.shape[0]
+
+    logging.info(f"  [GapAligner] Pre-init with {n_init} pairs")
+    gap_aligner.update(torch.cat(init_rgb).numpy(), torch.cat(init_thr).numpy())
 
 #### Training loop (MS2 triplets)
 GlobalTriplet = torch.nn.TripletMarginLoss(margin=args.margin, p=2, reduction="sum")
@@ -119,13 +152,17 @@ loops_num = math.ceil(args.queries_per_epoch / args.cache_refresh_rate)
 
 thermal_flag = torch.ones(1, dtype=torch.bool)
 rgb_flags = torch.zeros(1 + args.negs_num_per_query, dtype=torch.bool)
-bundle_flags = torch.cat([thermal_flag, rgb_flags]).to(args.device)  
+bundle_flags = torch.cat([thermal_flag, rgb_flags]).to(args.device)
 flags = bundle_flags.repeat(args.train_batch_size)
 
 for epoch_num in range(start_epoch_num, args.epochs_num):
     logging.info(f"Start training epoch: {epoch_num:02d}")
     epoch_start_time = datetime.now()
     epoch_losses = []
+    epoch_trip_losses = []
+    epoch_gap_losses  = []
+    epoch_gap_cosines = []
+    gap_buf_thr, gap_buf_rgb, gap_n_pairs = [], [], 0
 
     for loop_num in range(loops_num):
         logging.debug(f"Cache refresh: {loop_num + 1} / {loops_num}")
@@ -142,31 +179,46 @@ for epoch_num in range(start_epoch_num, args.epochs_num):
 
         model = model.train()
         for images, triplets_local_indexes, _ in tqdm(triplets_dl, ncols=100):
-            loss = torch.tensor(0.0, device=args.device)
-
             optimizer.zero_grad()
+
             descriptors = model(images.to(args.device), flags)
             triplets_local_indexes = torch.transpose(
                 triplets_local_indexes.view(args.train_batch_size, args.negs_num_per_query, 3), 1, 0)
+
+            # Triplet loss (original)
+            loss_trip = 0
             for triplets in triplets_local_indexes:
                 queries_indexes, positives_indexes, negatives_indexes = triplets.T
-                loss += GlobalTriplet(
-                    descriptors[queries_indexes],
-                    descriptors[positives_indexes],
-                    descriptors[negatives_indexes],
-                )
-            loss /= (args.train_batch_size * args.negs_num_per_query)
+                loss_trip += GlobalTriplet(descriptors[queries_indexes],
+                                          descriptors[positives_indexes],
+                                          descriptors[negatives_indexes])
+            loss_trip /= (args.train_batch_size * args.negs_num_per_query)
 
-            # Add gap alignment loss (Procrustes SVD)
-            if gap_aligner.W_thr is not None and loss_module.gap_loss_weight > 0.0:
-                thermal_idx = flags.nonzero(as_tuple=True)[0]
-                rgb_idx = (~flags).nonzero(as_tuple=True)[0]
-                if len(thermal_idx) > 0 and len(rgb_idx) > 0:
-                    # Take first thermal and first rgb in batch for alignment
-                    f_thr_batch = descriptors[thermal_idx]
-                    f_rgb_batch = descriptors[rgb_idx][:len(thermal_idx)]  # match count
-                    gap_loss = gap_aligner.loss(f_thr_batch, f_rgb_batch.detach())
-                    loss = loss + loss_module.gap_loss_weight * gap_loss
+            # Gap alignment loss
+            # triplets_local_indexes[0]: [BS, 3] — 첫 번째 negative set에서 q/p 인덱스 추출
+            # (모든 neg set에서 query·positive 인덱스는 동일)
+            loss_gap = torch.tensor(0.0, device=args.device)
+            if gap_aligner is not None:
+                q_idx = triplets_local_indexes[0, :, 0]
+                p_idx = triplets_local_indexes[0, :, 1]
+                f_thr = descriptors[q_idx].float()           # gradient 흐름 (thermal)
+                f_rgb = descriptors[p_idx].detach().float()   # gradient 차단 (rgb)
+                loss_gap = gap_aligner.loss(f_thr, f_rgb)
+
+            loss = loss_trip + args.gap_lambda * loss_gap
+
+            # Gap buffer 누적 (epoch-end GapAligner.update() 용)
+            if gap_aligner is not None and gap_n_pairs < args.gap_max_pairs:
+                gap_buf_thr.append(f_thr.detach().cpu())
+                gap_buf_rgb.append(f_rgb.cpu())
+                gap_n_pairs += f_thr.shape[0]
+
+            # Matched-pair cosine (gap 모니터링)
+            if gap_aligner is not None:
+                with torch.no_grad():
+                    cos = torch.nn.functional.cosine_similarity(
+                        f_thr, f_rgb, dim=-1).mean().item()
+                    epoch_gap_cosines.append(cos)
 
             del descriptors
 
@@ -174,41 +226,38 @@ for epoch_num in range(start_epoch_num, args.epochs_num):
             optimizer.step()
 
             epoch_losses.append(loss.item())
+            epoch_trip_losses.append(loss_trip.item())
+            if gap_aligner is not None:
+                epoch_gap_losses.append(loss_gap.item())
             del loss
 
         logging.debug(f"Epoch[{epoch_num:02d}]({loop_num + 1}/{loops_num}): "
-                      f"average triplet loss = {np.mean(epoch_losses):.4f}")
+                      f"avg trip={np.mean(epoch_trip_losses):.4f}"
+                      + (f"  avg gap={np.mean(epoch_gap_losses):.4f}" if gap_aligner else ""))
 
     logging.info(f"Finished epoch {epoch_num:02d} in {str(datetime.now() - epoch_start_time)[:-7]}, "
-                 f"average epoch triplet loss = {np.mean(epoch_losses):.4f}")
+                 f"avg total loss={np.mean(epoch_losses):.4f}  "
+                 f"trip={np.mean(epoch_trip_losses):.4f}"
+                 + (f"  gap={np.mean(epoch_gap_losses):.4f}  "
+                    f"matched_cos={np.mean(epoch_gap_cosines):.4f}" if gap_aligner else ""))
 
-    # Update GapAligner with training descriptors (Procrustes SVD alignment)
+    # ── Gap aligner epoch-end update & analysis ────────────────
     if gap_aligner is not None:
-        logging.info("Updating GapAligner with training descriptors...")
-        model.eval()
-        with torch.no_grad():
-            all_desc_rgb, all_desc_thr = [], []
-            # Create inference dataloader for all training images
-            triplets_ds.is_inference = True
-            infer_dl = DataLoader(dataset=triplets_ds, num_workers=args.num_workers,
-                                   batch_size=args.train_batch_size, pin_memory=(args.device == "cuda"))
-            for images, _, _ in tqdm(infer_dl, desc="  extract features", ncols=80, leave=False):
-                descs = model(images.to(args.device), flags)
-                thermal_idx = flags[:descs.shape[0]].nonzero(as_tuple=True)[0]
-                rgb_idx = (~flags[:descs.shape[0]]).nonzero(as_tuple=True)[0]
-                if len(thermal_idx) > 0:
-                    all_desc_thr.append(descs[thermal_idx].cpu().numpy())
-                if len(rgb_idx) > 0:
-                    all_desc_rgb.append(descs[rgb_idx].cpu().numpy())
-            triplets_ds.is_inference = False
+        avg_gap_loss = np.mean(epoch_gap_losses) if epoch_gap_losses else 0.0
+        avg_gap_cos  = np.mean(epoch_gap_cosines) if epoch_gap_cosines else 0.0
+        cw.wandb_log("loss", "triplet",     np.mean(epoch_trip_losses))
+        cw.wandb_log("loss", "gap",         avg_gap_loss)
+        cw.wandb_log("gap",  "matched_cos", avg_gap_cos)
+        cw.wandb_log("gap",  "n_pairs",     gap_n_pairs)
 
-            if all_desc_rgb and all_desc_thr:
-                f_rgb = np.concatenate(all_desc_rgb, axis=0)
-                f_thr = np.concatenate(all_desc_thr, axis=0)
-                # Only update if we have enough samples
-                if len(f_rgb) > 10 and len(f_thr) > 10 and f_rgb.shape[1] == f_thr.shape[1]:
-                    gap_aligner.update(f_rgb, f_thr)
-                    logging.info(f"GapAligner updated with {len(f_rgb)} RGB and {len(f_thr)} Thermal descriptors")
+        if gap_buf_thr:
+            f_thr_np = torch.cat(gap_buf_thr).numpy()
+            f_rgb_np = torch.cat(gap_buf_rgb).numpy()
+            logging.info(f"  [GapAligner] Updating with {gap_n_pairs} pairs...")
+            gap_aligner.update(f_rgb_np, f_thr_np)
+            # sigma_k 상위 5개 wandb 로그
+            for i, s in enumerate(gap_aligner.sigma_k[:5].tolist()):
+                cw.wandb_log("gap", f"sigma_{i}", s)
 
     # Compute recalls on all validation sequences
     all_r1, all_r5 = [], []

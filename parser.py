@@ -50,8 +50,13 @@ def parse_arguments():
                         help="Total number of queries sampled per training epoch (ms2_train only)")
     parser.add_argument("--margin", type=float, default=0.1,
                         help="Margin for triplet loss (ms2_train only)")
-    parser.add_argument("--gap_loss_weight", type=float, default=0.1,
-                        help="Weight for gap alignment loss (Procrustes SVD), 0.0 to disable")
+    # Gap alignment (Procrustes subspace loss)
+    parser.add_argument("--gap_lambda",    type=float, default=0.0,
+                        help="Weight for gap alignment loss. 0 = disabled.")
+    parser.add_argument("--gap_k",         type=int,   default=50,
+                        help="Procrustes SVD top-k directions for gap alignment subspace.")
+    parser.add_argument("--gap_max_pairs", type=int,   default=2000,
+                        help="Max matched pairs accumulated per epoch for GapAligner update.")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to load checkpoint from, for resuming training or testing.")
     parser.add_argument("--finetune", type=str, default=None,

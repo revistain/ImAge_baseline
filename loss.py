@@ -3,12 +3,8 @@ from pytorch_metric_learning.distances import CosineSimilarity, DotProductSimila
 loss_fn = losses.MultiSimilarityLoss(alpha=1.0, beta=50, base=0.0, distance=DotProductSimilarity())
 miner = miners.MultiSimilarityMiner(epsilon=0.1, distance=CosineSimilarity())
 
-# Global GapAligner instance (initialized in train.py)
-gap_aligner = None
-gap_loss_weight = 0.0
-
 #  The loss function call (this method will be called at each training iteration)
-def loss_function(descriptors, labels, f_thr=None, f_rgb=None):
+def loss_function(descriptors, labels):
     # we mine the pairs/triplets if there is an online mining strategy
     if miner is not None:
         miner_outputs = miner(descriptors, labels)
@@ -22,10 +18,4 @@ def loss_function(descriptors, labels, f_thr=None, f_rgb=None):
     else: # no online mining
         loss = loss_fn(descriptors, labels)
         batch_acc = 0.0
-
-    # Add gap alignment loss if available
-    if gap_aligner is not None and gap_loss_weight > 0.0 and f_thr is not None and f_rgb is not None:
-        gap_loss = gap_aligner.loss(f_thr, f_rgb.detach())
-        loss = loss + gap_loss_weight * gap_loss
-
     return loss

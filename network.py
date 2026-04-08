@@ -27,7 +27,7 @@ class VPRmodel(nn.Module):
         # Thermal backbone: blocks 0~(freeze_te-1) frozen, blocks freeze_te~11 trainable
         self.backbone_thermal, agg_tokens_thermal = get_backbone_thermal(args)
         self.learnable_agg_tokens_thermal = nn.Parameter(agg_tokens_thermal.clone())
-        self.learnable_agg_tokens_thermal.requires_grad = True
+        self.learnable_agg_tokens_thermal.requires_grad = False
 
         feat_dim = self.backbone_rgb.embed_dim * args.num_learnable_aggregation_tokens  # 768*8=6144
 
