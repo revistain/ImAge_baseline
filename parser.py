@@ -39,11 +39,6 @@ def parse_arguments():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--foundation_model_path", type=str, default=None,
                         help="Path to load foundation model checkpoint.")
-    parser.add_argument("--initialization_dataset", type=str, default="ms2_train",
-                        choices=["msls_train", "ms2_train", "gsv_cities", "None"],
-                        help="sample place images to initialize learnable aggregation tokens")
-    parser.add_argument("--training_dataset", type=str, default="ms2_train", choices=["gsv_cities", "unified_dataset", "ms2_train"],
-                        help="Dataset for model training")
     parser.add_argument("--cache_refresh_rate", type=int, default=1000,
                         help="How many queries are selected each cache refresh (ms2_train only)")
     parser.add_argument("--queries_per_epoch", type=int, default=2000,
