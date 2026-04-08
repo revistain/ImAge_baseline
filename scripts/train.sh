@@ -11,8 +11,6 @@ python3 train.py \
     --test_seq Campus Residential \
     --epochs_num=40 \
     --patience=20 \
-    --initialization_dataset=None \
-    --training_dataset=ms2_train \
     --cache_refresh_rate=1000 \
     --queries_per_epoch=2000 \
     --margin=0.1 \
