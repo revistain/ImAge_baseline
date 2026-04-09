@@ -247,15 +247,15 @@ class DinoVisionTransformer(nn.Module):
             )
         return output
 
-    def forward_features(self, x, masks=None):
+    def forward_features(self, x, masks=None, apply_adapter: bool = True):
         if isinstance(x, list):
             return self.forward_features_list(x, masks)
 
         x = self.prepare_tokens_with_masks(x, masks)
 
-        for  blk in self.blocks:
-            x = blk(x)
-        
+        for blk in self.blocks:
+            x = blk(x, apply_adapter=apply_adapter)
+
         x_norm = self.norm(x)
 
         return {
@@ -319,12 +319,12 @@ class DinoVisionTransformer(nn.Module):
             return tuple(zip(outputs, class_tokens))
         return tuple(outputs)
 
-    def forward(self, *args, is_training=False, **kwargs):
-        ret = self.forward_features(*args, **kwargs)
+    def forward(self, *args, is_training=False, apply_adapter: bool = True, **kwargs):
+        ret = self.forward_features(*args, apply_adapter=apply_adapter, **kwargs)
         if is_training:
             return ret
         else:
-            return ret#self.head(ret["x_norm_clstoken"])
+            return ret
 
 
 def init_weights_vit_timm(module: nn.Module, name: str = ""):

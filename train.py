@@ -70,16 +70,16 @@ def train_model(args):
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     aggregator_params = sum(p.numel() for p in model.module.aggregator.parameters()) if model.module.aggregator else 0
-    adapter_params = sum(p.numel() for n, p in model.module.backbone_thermal.named_parameters() if 'adapter' in n)
+    adapter_params = sum(p.numel() for n, p in model.module.backbone.named_parameters() if 'adapter' in n)
 
     print(f"The entire parameters: {total_params / 1e6:.2f}M")
     print(f"The trainable parameters: {trainable_params / 1e6:.2f}M")
     print(f"The aggregator parameters: {aggregator_params / 1e6:.2f}M")
-    print(f"The adapater parameters: {adapter_params / 1e6:.2f}M")
+    print(f"The adapter parameters: {adapter_params / 1e6:.2f}M")
 
     #### Initialize agg tokens
     if not args.aggregator:
-        args.features_dim = model.module.backbone_rgb.embed_dim * args.num_learnable_aggregation_tokens
+        args.features_dim = model.module.backbone.embed_dim * args.num_learnable_aggregation_tokens
 
     if args.aggregator in ["netvlad"]:  # If using NetVLAD layer, initialize it
         args.features_dim = 768
@@ -87,7 +87,7 @@ def train_model(args):
             lejepa_ds = datasets_ws.LeJEPADataset(args, args.datasets_folder, "msls", "train", args.negs_num_per_query)
             logging.info(f"Train query set: {lejepa_ds}")
             lejepa_ds.is_inference = True
-            pretrained_model = network.get_backbone(args)
+            pretrained_model, _ = network.get_backbone(args)
             model.module.agg.initialize_netvlad_layer(args, lejepa_ds, pretrained_model.to(args.device)) 
         args.features_dim = args.features_dim * 8
 
