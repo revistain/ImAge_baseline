@@ -77,8 +77,6 @@ def save_files(path):
                 subprocess.run(['cp', '-r', file_path, models_dir])
             else:
                 print("File already exists", file_path)
-        else:
-            print("Can't find file")
                 
 cached_timestamp = None
 def get_timestamp():

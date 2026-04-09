@@ -1,4 +1,4 @@
-
+# import torchvision; torchvision.utils.save_image(views[0].float(), 'debug_output_views.png')
 import os
 import cv2
 import torch
@@ -363,12 +363,12 @@ class LeJEPADataset(BaseDataset):
         if self.query_transform: 
             views = [self.query_transform(query_img) for _ in range(2)]
             query_img = views[0]
-            views = views[1]
+            view = views[1]
         else: 
             query_img = self.resized_transform(query_img)
         pos_img = self.resized_transform(pos_img)
         
-        return query_img, pos_img, views
+        return query_img, pos_img, view
     
     def __len__(self):
         if self.is_inference:
@@ -450,7 +450,7 @@ class LeJEPADataset(BaseDataset):
         # Compute the cache only for queries and their positives, in order to find the best positive
         subset_ds = Subset(self, positives_indexes + list(sampled_queries_indexes + self.database_num))
         cache, _ = self.compute_cache(args, model, subset_ds, (len(self), args.features_dim))
-        y
+        
         # This loop's iterations could be done individually in the __getitem__(). This way is slower but clearer (and yields same results)
         for query_index in tqdm(sampled_queries_indexes, ncols=100):
             query_features = self.get_query_features(query_index, cache)

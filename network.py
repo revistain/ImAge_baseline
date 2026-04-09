@@ -63,7 +63,7 @@ class VPRmodel(nn.Module):
             return self._forward_impl(x, is_thermal=False)
         else:
             rgb_idx = (~is_thermal).nonzero(as_tuple=True)[0]
-            thr_idx =   is_thermal .nonzero(as_tuple=True)[0]
+            thr_idx = is_thermal.nonzero(as_tuple=True)[0]
             rgb_out = self._forward_impl(x[rgb_idx], is_thermal=False)
             thr_out = self._forward_impl(x[thr_idx], is_thermal=True)
             feats   = torch.cat([rgb_out, thr_out])
@@ -119,5 +119,12 @@ def get_backbone(args):
     for name, param in backbone.blocks.named_parameters():
         if 'adapter' in name.lower():
             param.requires_grad = True
+            
+    if args.freeze_te:
+        for name, child in backbone.blocks.named_children():
+            if int(name) >= args.freeze_te:
+                for p in child.parameters():
+                    p.requires_grad = True
+
 
     return backbone, agg_tokens

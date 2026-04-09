@@ -109,7 +109,6 @@ def train_model(args):
         best_r1_r5 = start_epoch_num = not_improved_num = 0
 
     #### Training loop (MS2 triplets)
-    GlobalTriplet = torch.nn.TripletMarginLoss(margin=args.margin, p=2, reduction="sum")
     loops_num = math.ceil(args.queries_per_epoch / args.cache_refresh_rate)
 
     thermal_flag = torch.ones(1, dtype=torch.bool)
@@ -139,28 +138,52 @@ def train_model(args):
                                     drop_last=True)
 
             model = model.train()
+            import torchvision; 
             for batch in tqdm(triplets_dl, ncols=100):
                 images, pos_img, views = batch
                 optimizer.zero_grad()
+                # torchvision.utils.save_image(views[0].float(), 'debug_output_views.png')
+                # torchvision.utils.save_image(images[0].float(), 'debug_output_query.png')
+                # torchvision.utils.save_image(pos_img[0].float(), 'debug_output_pos.png')
+                USE_LOCAL_VIEW = True
+                if USE_LOCAL_VIEW:
+                    with torch.no_grad():
+                        x_rgb = model.module._forward_impl(pos_img.to(args.device), is_thermal=False)
+                    x_ir = model.module._forward_impl(torch.cat([images, views], dim=0).to(args.device), is_thermal=True)
 
-                with torch.no_grad():
-                    x_rgb = model.module._forward_impl(pos_img.to(args.device), is_thermal=False)
-                x_ir = model.module._forward_impl(torch.cat([images, views], dim=0).to(args.device), is_thermal=True)
+                    pos_z = model.module.projector(x_rgb)
+                    ir_z = model.module.projector(x_ir)
+                    
+                    ir_global = ir_z[:args.train_batch_size]
+                    all_z = torch.cat([pos_z, ir_z])
+                    num_views = ir_z.size(0) // pos_z.size(0)
+                    pos_z_targets = pos_z.repeat(num_views, 1)
+                    inv_loss = F.mse_loss(pos_z_targets, ir_z).mean()
 
-                pos_z = model.module.projector(x_rgb)
-                ir_z = model.module.projector(x_ir)
-                
-                ir_global = ir_z[:args.train_batch_size]
-                all_z = torch.cat([pos_z, ir_z])
-                num_views = ir_z.size(0) // pos_z.size(0)
-                pos_z_targets = pos_z.repeat(num_views, 1)
-                inv_loss = F.mse_loss(pos_z_targets, ir_z).mean()
+                    sigreg_loss = BCS_loss(all_z, return_sim=False, return_sigreg=True)
+                    sigreg_loss = sigreg_loss['bcs_loss']
+                    BCS_loss.step += 1
 
-                sigreg_loss = BCS_loss(all_z, return_sim=False, return_sigreg=True)
-                sigreg_loss = sigreg_loss['bcs_loss']
-                BCS_loss.step += 1
+                    loss = inv_loss + sigreg_loss
+                else:
+                    with torch.no_grad():
+                        x_rgb = model.module._forward_impl(pos_img.to(args.device), is_thermal=False)
+                    x_ir = model.module._forward_impl(torch.cat([images, views], dim=0).to(args.device), is_thermal=True)
 
-                loss = inv_loss + 10 * sigreg_loss
+                    pos_z = model.module.projector(x_rgb)
+                    ir_z = model.module.projector(x_ir)
+
+                    ir_query = ir_z[:args.train_batch_size]
+                    all_z_simple = torch.cat([pos_z, ir_query], dim=0)
+
+                    sigreg_loss = BCS_loss(all_z_simple, return_sim=False, return_sigreg=True)
+                    sigreg_loss = sigreg_loss['bcs_loss']
+
+                    num_views = ir_z.size(0) // pos_z.size(0)
+                    pos_z_targets = pos_z.repeat(num_views, 1)
+                    inv_loss = F.mse_loss(pos_z_targets, ir_z).mean()
+
+                    loss = inv_loss + 10 * sigreg_loss
 
                 loss.backward()
                 optimizer.step()

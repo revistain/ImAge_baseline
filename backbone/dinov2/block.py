@@ -31,9 +31,10 @@ class VanillaAdapter(nn.Module):
         super().__init__()
         self.D_fc1 = nn.Linear(fc_in_channels, in_channels)
         self.D_fc2 = nn.Linear(in_channels, fc_in_channels)
+        self.act = nn.GELU()
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.D_fc2(F.relu(self.D_fc1(x), inplace=True))
+        return self.D_fc2(self.act(self.D_fc1(x)))
 
 try:
     from xformers.ops import fmha

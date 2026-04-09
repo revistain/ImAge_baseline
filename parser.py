@@ -38,13 +38,11 @@ def parse_arguments():
     # Initialization parameters
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--foundation_model_path", type=str, default=None,
-                        help="Path to load foundation model checkpoint.")
+                        help="Path to load foundation model checkpoint.")  
     parser.add_argument("--cache_refresh_rate", type=int, default=1000,
                         help="How many queries are selected each cache refresh (ms2_train only)")
     parser.add_argument("--queries_per_epoch", type=int, default=2000,
                         help="Total number of queries sampled per training epoch (ms2_train only)")
-    parser.add_argument("--margin", type=float, default=0.1,
-                        help="Margin for triplet loss (ms2_train only)")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to load checkpoint from, for resuming training or testing.")
     parser.add_argument("--finetune", type=str, default=None,

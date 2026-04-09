@@ -65,7 +65,6 @@ class BCS(nn.Module):
         self.lmbd = lmbd
 
     def forward(self, z1, z2=None, return_sim=True, return_sigreg=True):
-
         """
         z1, z2 : B, D latent vectors from view1 and view2
 
