@@ -28,7 +28,7 @@ base_transform = transforms.Compose([
 def collate_fn(batch):
     images  = torch.cat([e[0][None] for e in batch])
     pos_view  = torch.cat([e[1][None] for e in batch])
-    local_views = torch.cat([e[2][None] for e in batch])
+    local_views = torch.stack([e[2] for e in batch])  # [B, N, 3, H, W]
     return images, pos_view, local_views
 
 class BaseDataset(data.Dataset):
@@ -48,6 +48,7 @@ class BaseDataset(data.Dataset):
         elif all(i in ['r0', 'r1'] for i in args.sequences):
             self.dataset_type = 'nsavp'
         else:
+            print(f"{args.sequences}")
             raise Exception("sequence typo i guess")
             
         self.img_time = args.img_time
@@ -228,7 +229,6 @@ class BaseDataset(data.Dataset):
                 time_conds = ["FA0", "DA0"]
             else: raise Exception("What?")
                 
-
         for mat, seq in zip(self.matStruct, self.args.sequences):
             for cond in time_conds:
                 n = len(mat[f'q_t_{cond}'][0, 0])
@@ -360,15 +360,15 @@ class LeJEPADataset(BaseDataset):
         pos_img = self.get_rgb_img(self.database_paths[best_positive_index.item()])
 
         # 증강(Transform) 적용
-        if self.query_transform: 
-            views = [self.query_transform(query_img) for _ in range(2)]
-            query_img = views[0]
-            view = views[1]
+        if self.query_transform:
+            _views = [self.query_transform(query_img) for _ in range(2)]
+            query_img = _views[0]
+            views = torch.stack(_views[1:])  # [N, 3, H, W]
         else: 
             query_img = self.resized_transform(query_img)
         pos_img = self.resized_transform(pos_img)
         
-        return query_img, pos_img, view
+        return query_img, pos_img, views
     
     def __len__(self):
         if self.is_inference:

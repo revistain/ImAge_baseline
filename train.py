@@ -20,6 +20,8 @@ import parser
 import commons
 import network
 import datasets_ws
+from gap_aligner import GapAligner
+from visualize_retrieval import visualize_epoch
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -101,6 +103,12 @@ def train_model(args):
     elif args.optim == "adamW":
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=5e-2)
 
+    #### Gap Aligner (Procrustes subspace alignment, Method 1)
+    gap_aligner = GapAligner(k=args.gap_k, pca_dim=256) if args.gap_lambda > 0 else None
+    if gap_aligner is not None:
+        logging.info(f"GapAligner enabled: lambda={args.gap_lambda}, k={args.gap_k}, max_pairs={args.gap_max_pairs}")
+
+
     #### Resume model, optimizer, and other training parameters
     if args.resume:
         model, optimizer, best_r1_r5, start_epoch_num, not_improved_num = util.resume_train(args, model, optimizer)
@@ -108,7 +116,40 @@ def train_model(args):
     else:
         best_r1_r5 = start_epoch_num = not_improved_num = 0
 
-    #### Training loop (MS2 triplets)
+    #### GapAligner / LDAProjector pre-init
+    if gap_aligner is not None:
+        logging.info("Pre-initializing GapAligner")
+        lejepa_ds.is_inference = True
+        lejepa_ds.compute_triplets(args, model)
+        lejepa_ds.is_inference = False
+
+        init_dl = DataLoader(dataset=lejepa_ds, num_workers=args.num_workers,
+                            batch_size=args.train_batch_size,
+                            collate_fn=datasets_ws.collate_fn,
+                            pin_memory=(args.device == "cuda"),
+                            drop_last=True)
+
+        init_thr, init_rgb, n_init = [], [], 0
+        model.eval()
+        with torch.no_grad():
+            for images, pos_img, _ in init_dl:
+                if n_init >= args.gap_max_pairs:
+                    break
+                is_thermal = torch.zeros(images.shape[0]+pos_img.shape[0], dtype=torch.bool)
+                for i in range(images.shape[0]):
+                    is_thermal[i] = True
+                for i in range(pos_img.shape[0]):
+                    is_thermal[images.shape[0]:images.shape[0]+i] = False
+                descriptors = model(torch.cat([images, pos_img], dim=0).to(args.device), is_thermal=is_thermal.to(args.device))
+                init_thr.append(descriptors[:images.shape[0]].float().cpu())
+                init_rgb.append(descriptors[images.shape[0]:].float().cpu())
+                n_init += images.shape[0]
+
+        if gap_aligner is not None:
+            logging.info(f"  [GapAligner] Pre-init with {n_init} pairs")
+            gap_aligner.update(torch.cat(init_rgb).numpy(), torch.cat(init_thr).numpy())
+            
+    #### Training loop
     loops_num = math.ceil(args.queries_per_epoch / args.cache_refresh_rate)
 
     thermal_flag = torch.ones(1, dtype=torch.bool)
@@ -122,8 +163,11 @@ def train_model(args):
         epoch_losses = []
         epoch_inv_losses = []
         epoch_sig_losses = []
+        epoch_gap_cosines = []
+        epoch_gap_losses  = []
         epoch_cosines = []
-
+        gap_buf_thr, gap_buf_rgb, gap_n_pairs = [], [], 0
+        
         for loop_num in range(loops_num):
             logging.debug(f"Cache refresh: {loop_num + 1} / {loops_num}")
 
@@ -142,48 +186,51 @@ def train_model(args):
             for batch in tqdm(triplets_dl, ncols=100):
                 images, pos_img, views = batch
                 optimizer.zero_grad()
-                # torchvision.utils.save_image(views[0].float(), 'debug_output_views.png')
-                # torchvision.utils.save_image(images[0].float(), 'debug_output_query.png')
-                # torchvision.utils.save_image(pos_img[0].float(), 'debug_output_pos.png')
-                USE_LOCAL_VIEW = True
-                if USE_LOCAL_VIEW:
-                    with torch.no_grad():
-                        x_rgb = model.module._forward_impl(pos_img.to(args.device), is_thermal=False)
-                    x_ir = model.module._forward_impl(torch.cat([images, views], dim=0).to(args.device), is_thermal=True)
 
-                    pos_z = model.module.projector(x_rgb)
-                    ir_z = model.module.projector(x_ir)
+                ####################################
+                ########## LeJEPA Sig Loss #########
+                B = images.shape[0]
+                views_flat = views.view(B * views.shape[1], *views.shape[2:])  # [B*N, 3, H, W]
+
+                with torch.no_grad():
+                    x_rgb = model(pos_img.to(args.device), is_thermal=False)
+                x_ir = model(torch.cat([images, views_flat], dim=0).to(args.device), is_thermal=True)
+                x_ir_global = x_ir[:args.train_batch_size]
+                
+                pos_z = model.module.projector(x_rgb)
+                ir_z = model.module.projector(x_ir)
+                
+                ir_global = ir_z[:args.train_batch_size]
+                all_z = torch.cat([pos_z, ir_z])
+                num_views = ir_z.size(0) // pos_z.size(0)
+                pos_z_targets = pos_z.repeat(num_views, 1)
+                inv_loss = F.mse_loss(pos_z_targets, ir_z).mean()
+
+                sigreg_loss = BCS_loss(all_z, return_sim=False, return_sigreg=True)
+                sigreg_loss = sigreg_loss['bcs_loss']
+                BCS_loss.step += 1
+
+                loss = inv_loss + 10 * sigreg_loss
+                ####################################
+                ######## Gap alignment loss ########
+                # loss_gap = torch.tensor(0.0, device=args.device)
+                # if gap_aligner is not None:
+                #     # x_rgb         : [B, 6144]
+                #     # x_ir_global   : [B, 6144]
+                #     loss_gap = gap_aligner.loss(x_ir_global, x_rgb.detach())
+                #     loss += args.gap_lambda * loss_gap
                     
-                    ir_global = ir_z[:args.train_batch_size]
-                    all_z = torch.cat([pos_z, ir_z])
-                    num_views = ir_z.size(0) // pos_z.size(0)
-                    pos_z_targets = pos_z.repeat(num_views, 1)
-                    inv_loss = F.mse_loss(pos_z_targets, ir_z).mean()
+                #     with torch.no_grad():
+                #         cos = torch.nn.functional.cosine_similarity(
+                #             x_ir_global, x_rgb, dim=-1).mean().item()
+                #         epoch_gap_cosines.append(cos)
 
-                    sigreg_loss = BCS_loss(all_z, return_sim=False, return_sigreg=True)
-                    sigreg_loss = sigreg_loss['bcs_loss']
-                    BCS_loss.step += 1
-
-                    loss = inv_loss + sigreg_loss
-                else:
-                    with torch.no_grad():
-                        x_rgb = model.module._forward_impl(pos_img.to(args.device), is_thermal=False)
-                    x_ir = model.module._forward_impl(torch.cat([images, views], dim=0).to(args.device), is_thermal=True)
-
-                    pos_z = model.module.projector(x_rgb)
-                    ir_z = model.module.projector(x_ir)
-
-                    ir_query = ir_z[:args.train_batch_size]
-                    all_z_simple = torch.cat([pos_z, ir_query], dim=0)
-
-                    sigreg_loss = BCS_loss(all_z_simple, return_sim=False, return_sigreg=True)
-                    sigreg_loss = sigreg_loss['bcs_loss']
-
-                    num_views = ir_z.size(0) // pos_z.size(0)
-                    pos_z_targets = pos_z.repeat(num_views, 1)
-                    inv_loss = F.mse_loss(pos_z_targets, ir_z).mean()
-
-                    loss = inv_loss + 10 * sigreg_loss
+                # # Gap buffer 누적 (epoch-end GapAligner.update() 용)
+                # if gap_aligner is not None and gap_n_pairs < args.gap_max_pairs:
+                #     gap_buf_thr.append(x_ir_global.cpu())
+                #     gap_buf_rgb.append(x_rgb.detach().cpu())
+                #     gap_n_pairs += x_ir_global.shape[0]
+                ####################################
 
                 loss.backward()
                 optimizer.step()
@@ -195,30 +242,57 @@ def train_model(args):
                 with torch.no_grad():
                     cos = F.cosine_similarity(pos_z, ir_global, dim=-1).mean().item()
                     epoch_cosines.append(cos)
-
+                    
+                # if gap_aligner is not None:
+                #     epoch_gap_losses.append(loss_gap.item())
                 del loss
 
             logging.debug(f"Epoch[{epoch_num:02d}]({loop_num + 1}/{loops_num}): "
                         f"avg loss={np.mean(epoch_losses):.4f}  "
                         f"inv={np.mean(epoch_inv_losses):.4f}  "
-                        f"sig={np.mean(epoch_sig_losses):.4f}")
+                        f"sig={np.mean(epoch_sig_losses):.4f} "
+                        f"gap={np.mean(epoch_gap_losses):.4f} "
+                        f"matched_cos={np.mean(epoch_gap_cosines):.4f}" if gap_aligner else "")
 
         logging.info(f"Finished epoch {epoch_num:02d} in {str(datetime.now() - epoch_start_time)[:-7]}, "
                     f"avg loss={np.mean(epoch_losses):.4f}  "
                     f"inv={np.mean(epoch_inv_losses):.4f}  "
                     f"sig={np.mean(epoch_sig_losses):.4f}  "
-                    f"cos={np.mean(epoch_cosines):.4f}")
+                    f"gap={np.mean(epoch_gap_losses):.4f} "
+                    f"matched_cos={np.mean(epoch_gap_cosines):.4f}" if gap_aligner else "")
 
-        cw.wandb_log("loss", "total", np.mean(epoch_losses))
-        cw.wandb_log("loss", "invariance", np.mean(epoch_inv_losses))
-        cw.wandb_log("loss", "sigreg", np.mean(epoch_sig_losses))
-        cw.wandb_log("lejepa", "matched_cos", np.mean(epoch_cosines))
 
+        # ── Gap aligner epoch-end update & analysis ────────────────
+        if gap_aligner is not None:
+            avg_gap_loss = np.mean(epoch_gap_losses) if epoch_gap_losses else 0.0
+            avg_gap_cos  = np.mean(epoch_gap_cosines) if epoch_gap_cosines else 0.0
+            cw.wandb_log("loss", "total", np.mean(epoch_losses))
+            cw.wandb_log("loss", "invariance", np.mean(epoch_inv_losses))
+            cw.wandb_log("loss", "sigreg", np.mean(epoch_sig_losses))
+            cw.wandb_log("lejepa", "matched_cos", np.mean(epoch_cosines))
+            
+            cw.wandb_log("loss", "gap",         avg_gap_loss)
+            cw.wandb_log("gap",  "matched_cos", avg_gap_cos)
+            cw.wandb_log("gap",  "n_pairs",     gap_n_pairs)
+
+            if gap_buf_thr:
+                f_thr_np = torch.cat(gap_buf_thr).detach().cpu().numpy()
+                f_rgb_np = torch.cat(gap_buf_rgb).detach().cpu().numpy()
+                logging.info(f"  [GapAligner] Updating with {gap_n_pairs} pairs...")
+                gap_aligner.update(f_rgb_np, f_thr_np)
+                # sigma_k 상위 5개 wandb 로그
+                for i, s in enumerate(gap_aligner.sigma_k[:5].tolist()):
+                    cw.wandb_log("gap", f"sigma_{i}", s)
+                
         # Compute recalls on all validation sequences
         all_r1, all_r5 = [], []
         for seq, val_dataset in zip(test_sequences, val_ds_list):
-            recalls, recalls_str = test.test(args, val_dataset, model)
+            recalls, recalls_str, predictions, positives_per_query = test.test(
+                args, val_dataset, model, return_predictions=True)
             logging.info(f"Recalls on [{seq}] {val_dataset}: {recalls_str}")
+            vis_dir = join(args.save_dir, "vis")
+            visualize_epoch(val_dataset, predictions, positives_per_query,
+                            epoch_num, seq, vis_dir, n_samples=10)
             cw.wandb_log("r1", seq, recalls[0])
             cw.wandb_log("r5", seq, recalls[1])
             cw.wandb_log("r10", seq, recalls[2])

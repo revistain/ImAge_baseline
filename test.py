@@ -7,7 +7,7 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Subset
 
-def test(args, eval_ds, model, test_method="hard_resize", pca=None, return_features=False):
+def test(args, eval_ds, model, test_method="hard_resize", pca=None, return_features=False, return_predictions=False):
     """Compute features of the given dataset and compute the recalls."""
     
     assert test_method in ["hard_resize", "single_query", "central_crop", "five_crops",
@@ -87,4 +87,6 @@ def test(args, eval_ds, model, test_method="hard_resize", pca=None, return_featu
     recalls_str = ", ".join([f"R@{val}: {rec:.1f}" for val, rec in zip(args.recall_values, recalls)])
     if return_features:
         return recalls, recalls_str, db_feats_copy, q_feats_copy
+    if return_predictions:
+        return recalls, recalls_str, predictions, positives_per_query
     return recalls, recalls_str

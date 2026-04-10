@@ -83,6 +83,15 @@ def parse_arguments():
                         choices=["allday", "daytime", "nighttime", "latetime"])
     parser.add_argument("--rgb_model_path", type=str, default="/home/jwkim/workspace/benchmark_THR2RGB/ImAge/ImAge_GSV.pth")
     parser.add_argument("--comment", type=str, default="default")
+    
+    # Gap alignment (Method: Procrustes subspace loss)
+    parser.add_argument("--gap_lambda",    type=float, default=0.1,
+                        help="Weight for gap alignment loss. 0 = disabled.")
+    parser.add_argument("--gap_k",         type=int,   default=20,
+                        help="Procrustes SVD top-k directions for gap alignment subspace.")
+    parser.add_argument("--gap_max_pairs", type=int,   default=2000,
+                        help="Max matched pairs accumulated per epoch for GapAligner update.")
+
     args = parser.parse_args()
     
     return args
