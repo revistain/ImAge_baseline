@@ -58,7 +58,7 @@ def train_model(args):
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     aggregator_params = sum(p.numel() for p in model.module.aggregator.parameters()) if model.module.aggregator else 0
-    adapter_params = sum(p.numel() for n, p in model.module.backbone_thermal.named_parameters() if 'adapter' in n)
+    adapter_params = sum(p.numel() for n, p in model.module.backbone.named_parameters() if 'adapter' in n)
 
     print(f"The entire parameters: {total_params / 1e6:.2f}M")
     print(f"The trainable parameters: {trainable_params / 1e6:.2f}M")
@@ -67,7 +67,7 @@ def train_model(args):
 
     #### Initialize agg tokens
     if not args.aggregator:
-        args.features_dim = model.module.backbone_rgb.embed_dim * args.num_learnable_aggregation_tokens
+        args.features_dim = model.module.backbone.embed_dim * args.num_learnable_aggregation_tokens
 
     if args.aggregator in ["netvlad"]:  # If using NetVLAD layer, initialize it
         args.features_dim = 768
@@ -87,7 +87,7 @@ def train_model(args):
     elif args.optim == "sgd":
         optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=0.001)
     elif args.optim == "adamW":
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=0.001)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.001)
 
     #### Resume model, optimizer, and other training parameters
     if args.resume:
@@ -124,11 +124,13 @@ def train_model(args):
                                     drop_last=True)
 
             model = model.train()
+            bundle_size = 2 + args.negs_num_per_query  # query + positive + negatives
             for images, triplets_local_indexes, _ in tqdm(triplets_dl, ncols=100):
                 loss = torch.tensor(0.0, device=args.device)
-                
+                images = images.to(args.device)
+
                 optimizer.zero_grad()
-                descriptors = model(images.to(args.device), flags)
+                descriptors = model(images, flags)
                 triplets_local_indexes = torch.transpose(
                     triplets_local_indexes.view(args.train_batch_size, args.negs_num_per_query, 3), 1, 0)
                 for triplets in triplets_local_indexes:
@@ -140,6 +142,13 @@ def train_model(args):
                     )
                 loss /= (args.train_batch_size * args.negs_num_per_query)
                 del descriptors
+
+                # Flow matching loss (film_adapter + lambda_flow > 0 일 때만)
+                if args.lambda_flow > 0 and args.film_adapter:
+                    thr_imgs     = images[0::bundle_size]   # thermal query
+                    rgb_pos_imgs = images[1::bundle_size]   # RGB positive
+                    flow_loss = model.module.compute_flow_loss(thr_imgs, rgb_pos_imgs)
+                    loss = loss + args.lambda_flow * flow_loss
 
                 loss.backward()
                 optimizer.step()

@@ -90,7 +90,7 @@ class BaseDataset(data.Dataset):
             elif self.img_time == 'nighttime':
                 self.queries_utms = np.concatenate([mat['q_pose_evening'][0, 0] if self.dataset_type == 'sthereo' else mat['q_pose_nighttime'][0, 0] for mat in self.matStruct])
             elif self.img_time == 'latetime':
-                self.queries_utms = np.concatenate([np.concatenate((mat['q_pose_afternoon'][0, 0], mat['q_pose_evening'][0, 0])) if self.dataset_type == 'sthereo' else mat['q_pose_nighttime'][0, 0] for mat in self.matStruct])
+                self.queries_utms = np.concatenate([np.concatenate((mat['q_pose_afternoon'][0, 0], mat['q_pose_evening'][0, 0])) if self.dataset_type == 'sthereo' else np.concatenate((mat['q_pose_clearsky'][0, 0], mat['q_pose_rainy'][0, 0], mat['q_pose_nighttime'][0, 0])) for mat in self.matStruct])
         elif self.dataset_type in ['nsavp']:
             if 'r0' in self.args.sequences:
                 self.queries_utms = np.concatenate(
@@ -121,7 +121,7 @@ class BaseDataset(data.Dataset):
             elif self.img_time == 'nighttime':
                 self.queries_paths = np.concatenate([mat['q_t_evening'][0, 0] if self.dataset_type == 'sthereo' else mat['q_t_nighttime'][0, 0] for mat in self.matStruct])
             elif self.img_time == 'latetime':
-                self.queries_paths = np.concatenate([np.concatenate((mat['q_t_afternoon'][0, 0], mat['q_t_evening'][0, 0])) if self.dataset_type == 'sthereo' else mat['q_t_nighttime'][0, 0] for mat in self.matStruct])
+                self.queries_paths = np.concatenate([np.concatenate((mat['q_t_afternoon'][0, 0], mat['q_t_evening'][0, 0])) if self.dataset_type == 'sthereo' else np.concatenate((mat['q_t_clearsky'][0, 0], mat['q_t_rainy'][0, 0], mat['q_t_nighttime'][0, 0])) for mat in self.matStruct])
         elif self.dataset_type in ['nsavp']:
             if 'r0' in self.args.sequences:
                 self.queries_paths = np.concatenate(
@@ -238,7 +238,7 @@ class BaseDataset(data.Dataset):
             elif self.img_time == 'nighttime':
                 time_conds = ['nighttime']
             elif self.img_time == 'latetime':
-                time_conds = ['nighttime']
+                time_conds = ['clearsky', 'rainy', 'nighttime']
         elif self.dataset_type == 'nsavp':
             if 'r0' in self.args.sequences:
                 time_conds = ["FA0", "FN0", "FS0"]

@@ -83,6 +83,10 @@ def parse_arguments():
     parser.add_argument("--test_seq", type=str, default="none", help="_", nargs="+", choices=["Campus", "Residential", "Urban", 'KAIST', 'SNU', 'Valley', 'r0', 'r1'])
     parser.add_argument("--img_time", type=str, default="allday",
                         choices=["allday", "daytime", "nighttime", "latetime"])
+    parser.add_argument("--film_adapter", action="store_true",
+                        help="Replace per-block adapters with a single FiLM-conditioned shared adapter (Layer-as-Timestep).")
+    parser.add_argument("--lambda_flow", type=float, default=0.0,
+                        help="Flow matching loss weight. 0 = disabled. film_adapter와 함께 사용.")
     parser.add_argument("--rgb_model_path", type=str, default="/home/jwkim/workspace/benchmark_THR2RGB/ImAge/ImAge_GSV.pth")
     parser.add_argument("--comment", type=str, default="default")
     args = parser.parse_args()

@@ -18,6 +18,7 @@ import torch.utils.checkpoint
 from torch.nn.init import trunc_normal_
 
 from backbone.dinov2 import Mlp, PatchEmbed, SwiGLUFFNFused, MemEffAttention, NestedTensorBlock as Block
+from backbone.dinov2.block import FiLMAdapter
 logger = logging.getLogger("dinov2")
 
 def named_apply(fn: Callable, module: nn.Module, name="", depth_first=True, include_root=False) -> nn.Module:
@@ -60,7 +61,8 @@ class DinoVisionTransformer(nn.Module):
         num_register_tokens=0,
         interpolate_antialias=False,
         interpolate_offset=0.1,
-        use_adapter=False,
+        use_adapter=True,
+        use_film_adapter=False,
     ):
         """
         Args:
@@ -144,9 +146,17 @@ class DinoVisionTransformer(nn.Module):
                 ffn_layer=ffn_layer,
                 init_values=init_values,
                 use_adapter=use_adapter,
+                use_film_adapter=use_film_adapter,
+                layer_idx=i,
             )
             for i in range(depth)
         ]
+        # 공유 FiLM adapter: film 모드일 때만 생성
+        if use_adapter and use_film_adapter:
+            self.film_adapter = FiLMAdapter(embed_dim, embed_dim // 2, num_layers=depth)
+        else:
+            self.film_adapter = None
+        print(f"=== use_adapter: {use_adapter}, use_film_adapter: {use_film_adapter}")
         if block_chunks > 0:
             self.chunked_blocks = True
             chunked_blocks = []
