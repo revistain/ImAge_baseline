@@ -58,12 +58,12 @@ def train_model(args):
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     aggregator_params = sum(p.numel() for p in model.module.aggregator.parameters()) if model.module.aggregator else 0
-    adapter_params = sum(p.numel() for n, p in model.module.backbone.named_parameters() if 'adapter' in n)
+    cfm_params = sum(p.numel() for p in model.module.cfm_translator.parameters())
 
     print(f"The entire parameters: {total_params / 1e6:.2f}M")
     print(f"The trainable parameters: {trainable_params / 1e6:.2f}M")
     print(f"The aggregator parameters: {aggregator_params / 1e6:.2f}M")
-    print(f"The adapater parameters: {adapter_params / 1e6:.2f}M")
+    print(f"The CFM translator parameters: {cfm_params / 1e6:.2f}M")
 
     #### Initialize agg tokens
     if not args.aggregator:
@@ -143,12 +143,12 @@ def train_model(args):
                 loss /= (args.train_batch_size * args.negs_num_per_query)
                 del descriptors
 
-                # Flow matching loss (film_adapter + lambda_flow > 0 일 때만)
-                if args.lambda_flow > 0 and args.film_adapter:
+                # OT-CFM loss
+                if args.lambda_flow > 0:
                     thr_imgs     = images[0::bundle_size]   # thermal query
                     rgb_pos_imgs = images[1::bundle_size]   # RGB positive
-                    flow_loss = model.module.compute_flow_loss(thr_imgs, rgb_pos_imgs)
-                    loss = loss + args.lambda_flow * flow_loss
+                    fm_loss = model.module.compute_fm_loss(thr_imgs, rgb_pos_imgs)
+                    loss = loss + args.lambda_flow * fm_loss
 
                 loss.backward()
                 optimizer.step()

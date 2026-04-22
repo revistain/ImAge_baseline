@@ -16,29 +16,21 @@ COMMON_ARGS="
     --foundation_model_path=/home/jwkim/workspace/benchmark_THR2RGB/pretrained/dinov2_vitb14_reg4_pretrain.pth
 "
 
-# # Vanilla adapter (GPU 5)
-# OMP_NUM_THREADS=4 CUDA_VISIBLE_DEVICES=5 python3 train.py \
-#     $COMMON_ARGS \
-#     --comment "vanilla-adapter" \
-#     > logs/vanilla-adapter.log 2>&1 &
-# echo "[vanilla-adapter] PID=$!"
-
-# # FiLM shared adapter (GPU 6)
-# OMP_NUM_THREADS=4 CUDA_VISIBLE_DEVICES=6 python3 train.py \
-#     $COMMON_ARGS \
-#     --film_adapter \
-#     --comment "film-adapter" \
-#     > logs/film-adapter.log 2>&1 &
-# echo "[film-adapter]    PID=$!"
-
-# FiLM + Flow matching loss v2 (GPU 7)
-OMP_NUM_THREADS=4 CUDA_VISIBLE_DEVICES=6 python3 train.py \
+# CFM: triplet only (ablation — no FM loss)
+OMP_NUM_THREADS=4 CUDA_VISIBLE_DEVICES=5 python3 train.py \
     $COMMON_ARGS \
-    --film_adapter \
+    --lambda_flow 0.0 \
+    --comment "cfm-triplet" \
+    > logs/cfm-triplet.log 2>&1 &
+echo "[cfm-triplet] PID=$!"
+
+# CFM: triplet + OT-CFM loss (lambda=0.1)
+OMP_NUM_THREADS=4 CUDA_VISIBLE_DEVICES=4 python3 train.py \
+    $COMMON_ARGS \
     --lambda_flow 0.1 \
-    --comment "film-flow-v4_normtarin" \
-    > logs/film-flow-v4_normtarin.log 2>&1 &
-echo "[film-flow-v4_normtarin]    PID=$!"
+    --comment "cfm-fm" \
+    > logs/cfm-fm.log 2>&1 &
+echo "[cfm-fm]      PID=$!"
 
 wait
 echo "All experiments finished."
