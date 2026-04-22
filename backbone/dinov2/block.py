@@ -22,6 +22,19 @@ from backbone.dinov2.mlp import Mlp
 
 logger = logging.getLogger("dinov2")
 
+import torch.nn.functional as F
+class VanillaAdapter(nn.Module):
+    """Bottleneck adapter: dim → dim//2 → dim (ReLU, no skip).
+    Zero-init D_fc2 so adapter starts as identity.
+    """
+    def __init__(self, fc_in_channels: int, in_channels: int) -> None:
+        super().__init__()
+        self.D_fc1 = nn.Linear(fc_in_channels, in_channels)
+        self.D_fc2 = nn.Linear(in_channels, fc_in_channels)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.D_fc2(F.relu(self.D_fc1(x), inplace=True))
+
 try:
     from xformers.ops import fmha
     from xformers.ops import scaled_index_add, index_select_cat
@@ -30,52 +43,6 @@ try:
 except ImportError:
     logger.warning("xFormers not available")
     XFORMERS_AVAILABLE = False
-
-class VanillaAdapter(nn.Module):
-    def __init__(
-        self,
-        fc_in_channels: int,
-        in_channels: int,
-        skip_connect=False,
-    ) -> None:
-        super().__init__()
-        self.skip_connect=skip_connect
-
-        self.D_fc1 = nn.Linear(fc_in_channels, in_channels)
-        self.D_fc2 = nn.Linear(in_channels, fc_in_channels)
-        self.act = nn.GELU()
-
-    def forward(self, x: Tensor) -> List[Tensor]:
-        x0 = self.D_fc1(x)
-        x0 = self.act(x0)
-        outputs = self.D_fc2(x0)
-
-        if self.skip_connect:
-            outputs+=x
-        return outputs
-
-
-class FiLMAdapter(nn.Module):
-    """Layer-index conditioned shared adapter (FiLM: Feature-wise Linear Modulation).
-    단일 인스턴스를 모든 블록이 공유하며, layer_idx(timestep)로 동작을 구분한다.
-    """
-    def __init__(self, fc_in_channels: int, in_channels: int, num_layers: int = 12) -> None:
-        super().__init__()
-        self.D_fc1 = nn.Linear(fc_in_channels, in_channels)
-        self.D_fc2 = nn.Linear(in_channels, fc_in_channels)
-        self.act   = nn.GELU()
-        # FiLM: 레이어별 scale(γ) & shift(β) — 항등 변환에서 시작
-        self.film_gamma = nn.Embedding(num_layers, in_channels)
-        self.film_beta  = nn.Embedding(num_layers, in_channels)
-        nn.init.ones_(self.film_gamma.weight)
-        nn.init.zeros_(self.film_beta.weight)
-
-    def forward(self, x: Tensor, layer_idx: int) -> Tensor:
-        t     = torch.tensor(layer_idx, dtype=torch.long, device=x.device)
-        x0    = self.act(self.D_fc1(x))
-        # γ, β: [hidden] → broadcast over [B, N, hidden]
-        x0    = self.film_gamma(t) * x0 + self.film_beta(t)
-        return self.D_fc2(x0)
 
 class Block(nn.Module):
     def __init__(
@@ -94,13 +61,11 @@ class Block(nn.Module):
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         attn_class: Callable[..., nn.Module] = Attention,
         ffn_layer: Callable[..., nn.Module] = Mlp,
-        use_adapter = True,
-        use_film_adapter: bool = False,  # 공유 FiLMAdapter 사용 여부
-        layer_idx: int = 0,              # 블록 위치 (timestep)
+        use_adapter: bool = False,
     ) -> None:
         super().__init__()
+        # print(f"biases: qkv: {qkv_bias}, proj: {proj_bias}, ffn: {ffn_bias}")
         self.norm1 = norm_layer(dim)
-
         self.attn = attn_class(
             dim,
             num_heads=num_heads,
@@ -121,72 +86,40 @@ class Block(nn.Module):
             drop=drop,
             bias=ffn_bias,
         )
-
         self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
         self.sample_drop_ratio = drop_path
-        self.use_adapter       = use_adapter
-        self.use_film_adapter  = use_film_adapter
-        self.layer_idx         = layer_idx
+        self.adapter = VanillaAdapter(768, 768 // 2) if use_adapter else None
 
-        # 독립 adapter: film 모드가 아닐 때만 생성
-        if self.use_adapter and not self.use_film_adapter:
-            self.adapter = VanillaAdapter(dim, dim // 2)
-
-        drop_path = 0.
-        self.drop_path3 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
-    def forward(self, x: Tensor, modality=None, return_attn=False,
-                film_adapter=None, return_flow_info=False) -> Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         def attn_residual_func(x: Tensor) -> Tensor:
             return self.ls1(self.attn(self.norm1(x))[0])
 
-        def _adapter_out(x_normed: Tensor) -> Tensor:
-            if self.use_film_adapter and film_adapter is not None:
-                return film_adapter(x_normed, self.layer_idx)
-            return self.adapter(x_normed)
-
-        def ffn_residual_func(x: Tensor, return_adapter=False):
-            if self.use_adapter and modality == True:
-                x_normed = self.norm2(x)
-                x_a = _adapter_out(x_normed)
-                if return_adapter:
-                    return self.ls2(self.mlp(x_normed) + 0.2 * x_a), x_a
-                return self.ls2(self.mlp(x_normed) + 0.2 * x_a)
-            # adapter 비활성 시에도 return_adapter=True면 (residual, None) 반환
-            residual = self.ls2(self.mlp(self.norm2(x)))
-            if return_adapter:
-                return residual, None
-            return residual
-
-        need_adapter_out = return_attn or return_flow_info
+        def ffn_residual_func(x: Tensor) -> Tensor:
+            if self.adapter is not None:
+                return self.ls2(self.mlp(self.norm2(x)) + self.drop_path2(0.2 * self.adapter(self.norm2(x))))
+            return self.ls2(self.mlp(self.norm2(x)))
 
         if self.training and self.sample_drop_ratio > 0.1:
+            # the overhead is compensated only for a drop path rate larger than 0.1
             x = drop_add_residual_stochastic_depth(
-                x, residual_func=attn_residual_func,
+                x,
+                residual_func=attn_residual_func,
                 sample_drop_ratio=self.sample_drop_ratio,
             )
             x = drop_add_residual_stochastic_depth(
-                x, residual_func=ffn_residual_func,
+                x,
+                residual_func=ffn_residual_func,
                 sample_drop_ratio=self.sample_drop_ratio,
             )
-            return x, None
         elif self.training and self.sample_drop_ratio > 0.0:
             x = x + self.drop_path1(attn_residual_func(x))
-            x = x + self.drop_path2(ffn_residual_func(x))
-            return x, None
+            x = x + self.drop_path1(ffn_residual_func(x))  # FIXME: drop_path2
         else:
             x = x + attn_residual_func(x)
-            if need_adapter_out:
-                ffn_out, x_a = ffn_residual_func(x, return_adapter=True)
-                x = x + ffn_out
-                if return_attn:
-                    return x, ffn_out   # 기존 호환
-                return x, x_a           # return_flow_info: raw adapter output
-            else:
-                x = x + ffn_residual_func(x)
-                return x, None
+            x = x + ffn_residual_func(x)
+        return x
 
 def drop_add_residual_stochastic_depth(
     x: Tensor,
@@ -282,7 +215,7 @@ def drop_add_residual_stochastic_depth_list(
     return outputs
 
 class NestedTensorBlock(Block):
-    def forward_nested(self, x_list: List[Tensor], modality=None) -> List[Tensor]:
+    def forward_nested(self, x_list: List[Tensor]) -> List[Tensor]:
         """
         x_list contains a list of tensors to nest together and run
         """
@@ -294,6 +227,8 @@ class NestedTensorBlock(Block):
                 return self.attn(self.norm1(x), attn_bias=attn_bias)
 
             def ffn_residual_func(x: Tensor, attn_bias=None) -> Tensor:
+                if self.adapter is not None:
+                    return self.mlp(self.norm2(x)) + 0.2 * self.adapter(self.norm2(x))
                 return self.mlp(self.norm2(x))
 
             x_list = drop_add_residual_stochastic_depth_list(
@@ -310,10 +245,13 @@ class NestedTensorBlock(Block):
             )
             return x_list
         else:
+
             def attn_residual_func(x: Tensor, attn_bias=None) -> Tensor:
                 return self.ls1(self.attn(self.norm1(x), attn_bias=attn_bias))
 
             def ffn_residual_func(x: Tensor, attn_bias=None) -> Tensor:
+                if self.adapter is not None:
+                    return self.ls2(self.mlp(self.norm2(x)) + 0.2 * self.adapter(self.norm2(x)))
                 return self.ls2(self.mlp(self.norm2(x)))
 
             attn_bias, x = get_attn_bias_and_cat(x_list)
@@ -321,14 +259,12 @@ class NestedTensorBlock(Block):
             x = x + ffn_residual_func(x)
             return attn_bias.split(x)
 
-    def forward(self, x_or_x_list, modality=None, return_attn=False,
-                film_adapter=None, return_flow_info=False):
+    def forward(self, x_or_x_list):
         if isinstance(x_or_x_list, Tensor):
-            return super().forward(x_or_x_list, modality=modality, return_attn=return_attn,
-                                   film_adapter=film_adapter, return_flow_info=return_flow_info)
+            return super().forward(x_or_x_list)
         elif isinstance(x_or_x_list, list):
             assert XFORMERS_AVAILABLE, "Please install xFormers for nested tensors usage"
-            return self.forward_nested(x_or_x_list, modality=modality)
+            return self.forward_nested(x_or_x_list)
         else:
             raise AssertionError
 

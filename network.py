@@ -1,56 +1,13 @@
 import logging
 import math
 import torch
-import torch.nn.functional as F
 from torch import nn
+import torch.nn.functional as F
 from torchvision.transforms import v2
 
 from aggregators.netvlad import NetVLAD
 from aggregators.salad import SALAD
 from aggregators.boq import BoQ
-
-
-class CFMTranslator(nn.Module):
-    """OT-CFM velocity network: v_θ(x_t, t) ≈ x_1 - x_0.
-
-    Training: MSE(v_θ((1-t)*x0 + t*x1, t), x1 - x0)  for t ~ U(0,1)
-    Inference: Euler ODE solve  x1_hat = x0 + Σ dt * v_θ(x_t, t)
-    """
-
-    def __init__(self, feat_dim: int, hidden_dim: int = 2048) -> None:
-        super().__init__()
-        self.time_embed = nn.Sequential(
-            nn.Linear(64, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-        )
-        self.net = nn.Sequential(
-            nn.Linear(feat_dim + hidden_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, feat_dim),
-        )
-
-    def _sinusoidal_embed(self, t: torch.Tensor) -> torch.Tensor:
-        half = 32
-        freqs = torch.exp(-math.log(10000) * torch.arange(half, device=t.device) / half)
-        args = t[:, None].float() * freqs[None]
-        return torch.cat([torch.sin(args), torch.cos(args)], dim=-1)  # [B, 64]
-
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        t_emb = self.time_embed(self._sinusoidal_embed(t))  # [B, hidden]
-        return self.net(torch.cat([x, t_emb], dim=-1))      # [B, feat_dim]
-
-    def ode_solve(self, x0: torch.Tensor, steps: int = 1) -> torch.Tensor:
-        """Euler integration: thermal feature → RGB-like feature."""
-        x = x0
-        dt = 1.0 / steps
-        for i in range(steps):
-            t = torch.full((x.shape[0],), i * dt, device=x.device)
-            x = x + dt * self.forward(x, t)
-        return x
-
 
 class VPRmodel(nn.Module):
     def __init__(self, args):
@@ -61,49 +18,44 @@ class VPRmodel(nn.Module):
         self.num_learnable_aggregation_tokens = args.num_learnable_aggregation_tokens
         self.insertion_pos = 8
         self.norm_transform = v2.Compose([v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
-        self.cfm_steps = getattr(args, 'cfm_steps', 1)
+        
+        # RGB backbone: GSV pretrained, fully frozen
+        self.backbone_rgb, agg_tokens_rgb = get_backbone_rgb(args)
+        self.learnable_agg_tokens_rgb = nn.Parameter(agg_tokens_rgb.clone())
+        self.learnable_agg_tokens_rgb.requires_grad = False
 
-        self.backbone = get_backbone(args)
-        self.learnable_aggregation_tokens = nn.Parameter(
-            torch.zeros(1, args.num_learnable_aggregation_tokens, self.backbone.embed_dim)
-        ) if args.num_learnable_aggregation_tokens else None
+        # Thermal backbone: blocks 0~(freeze_te-1) frozen, blocks freeze_te~11 trainable
+        self.backbone_thermal, agg_tokens_thermal = get_backbone_thermal(args)
+        self.learnable_agg_tokens_thermal = nn.Parameter(agg_tokens_thermal.clone())
+        self.learnable_agg_tokens_thermal.requires_grad = True
 
-        feat_dim = self.backbone.embed_dim * args.num_learnable_aggregation_tokens  # 768*8=6144
-        self.cfm_translator = CFMTranslator(feat_dim, hidden_dim=2048)
+        feat_dim = self.backbone_rgb.embed_dim * args.num_learnable_aggregation_tokens  # 768*8=6144
 
-    def _get_backbone_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Both modalities use identical frozen backbone — no adapter."""
-        backbone   = self.backbone
-        agg_tokens = self.learnable_aggregation_tokens
+        # Final Projection Layer (modality-specific)
+        self.dim_reduction_layer_rgb = torch.nn.Linear(feat_dim, int(feat_dim*0.8))
+        torch.nn.init.orthogonal_(self.dim_reduction_layer_rgb.weight)
+        self.dim_reduction_layer_thermal = torch.nn.Linear(feat_dim, int(feat_dim*0.8))
+        torch.nn.init.orthogonal_(self.dim_reduction_layer_thermal.weight)
+
+    def _get_backbone_features(self, x: torch.Tensor, is_thermal: bool) -> torch.Tensor:
+        backbone   = self.backbone_thermal   if is_thermal else self.backbone_rgb
+        agg_tokens = self.learnable_agg_tokens_thermal if is_thermal else self.learnable_agg_tokens_rgb
 
         x = backbone.prepare_tokens_with_masks(x)
         B = x.shape[0]
         for i in range(self.insertion_pos):
-            x, _ = backbone.blocks[i](x, modality=False)
+            x = backbone.blocks[i](x)
         x = torch.cat([agg_tokens.expand(B, -1, -1), x], dim=1)
         for i in range(self.insertion_pos, len(backbone.blocks)):
-            x, _ = backbone.blocks[i](x, modality=False)
+            x = backbone.blocks[i](x)
         x_norm = backbone.norm(x)
-        return x_norm[:, :self.num_learnable_aggregation_tokens, :].flatten(1)  # [B, feat_dim]
+        return x_norm[:, :self.num_learnable_aggregation_tokens, :].flatten(1)
 
-    def compute_fm_loss(self, thermal_imgs: torch.Tensor, rgb_imgs: torch.Tensor) -> torch.Tensor:
-        """OT-CFM loss on descriptor space.
-
-        x0 = thermal descriptor (frozen backbone, no grad)
-        x1 = RGB descriptor    (frozen backbone, no grad)
-        x_t = (1-t)*x0 + t*x1,  t ~ U(0,1)
-        Loss = MSE(v_θ(x_t, t),  x1 - x0)
-        """
-        with torch.no_grad():
-            x0 = self._get_backbone_features(self.norm_transform(thermal_imgs))
-            x1 = self._get_backbone_features(self.norm_transform(rgb_imgs))
-
-        B  = x0.shape[0]
-        t  = torch.rand(B, device=x0.device)
-        x_t    = (1 - t[:, None]) * x0 + t[:, None] * x1
-        target = x1 - x0                               # constant velocity (OT-CFM)
-        v_pred = self.cfm_translator(x_t, t)
-        return F.mse_loss(v_pred, target)
+    def _forward_impl(self, x: torch.Tensor, is_thermal: bool) -> torch.Tensor:
+        x_g  = self._get_backbone_features(x, is_thermal)
+        proj = self.dim_reduction_layer_thermal if is_thermal else self.dim_reduction_layer_rgb
+        x_g = proj(F.normalize(x_g, p=2, dim=-1))
+        return F.normalize(x_g, p=2, dim=-1)
 
     def forward(self, x: torch.Tensor, is_thermal=False) -> torch.Tensor:
         if isinstance(is_thermal, bool):
@@ -111,25 +63,19 @@ class VPRmodel(nn.Module):
         x = self.norm_transform(x)
 
         if is_thermal.all():
-            raw = self._get_backbone_features(x)
-            out = self.cfm_translator.ode_solve(raw, steps=self.cfm_steps)
-            return F.normalize(out, p=2, dim=-1)
+            return self._forward_impl(x, is_thermal=True)
         elif not is_thermal.any():
-            raw = self._get_backbone_features(x)
-            return F.normalize(raw, p=2, dim=-1)
+            return self._forward_impl(x, is_thermal=False)
         else:
             rgb_idx = (~is_thermal).nonzero(as_tuple=True)[0]
             thr_idx =   is_thermal .nonzero(as_tuple=True)[0]
-            rgb_raw = self._get_backbone_features(x[rgb_idx])
-            rgb_out = F.normalize(rgb_raw, p=2, dim=-1)
-            thr_raw = self._get_backbone_features(x[thr_idx])
-            thr_out = F.normalize(self.cfm_translator.ode_solve(thr_raw, steps=self.cfm_steps), p=2, dim=-1)
-            feats = torch.cat([rgb_out, thr_out])
-            inv   = torch.empty(len(is_thermal), dtype=torch.long, device=x.device)
+            rgb_out = self._forward_impl(x[rgb_idx], is_thermal=False)
+            thr_out = self._forward_impl(x[thr_idx], is_thermal=True)
+            feats   = torch.cat([rgb_out, thr_out])
+            inv     = torch.empty(len(is_thermal), dtype=torch.long, device=x.device)
             inv[rgb_idx] = torch.arange(len(rgb_idx), device=x.device)
             inv[thr_idx] = len(rgb_idx) + torch.arange(len(thr_idx), device=x.device)
             return feats[inv]
-
 # ──────────────────────────────────────────────────────────────────────────────
 
 def get_aggregator(args):
@@ -145,13 +91,43 @@ def get_aggregator(args):
         return BoQ(in_channels=768, proj_channels=384, num_layers=2, num_queries=64, row_dim=32)
 
 
-def get_backbone(args):
-    """GSV pretrained backbone, fully frozen. No adapter — CFMTranslator handles modality gap."""
+def get_backbone_rgb(args):
+    """GSV pretrained ImAge 로드, 완전 frozen. (adapter 없음)"""
+    import backbone.dinov2.block as dinoblock
+    dinoblock.adapter_dim = None
+
     from backbone.vision_transformer import vit_small, vit_base, vit_large
     size = getattr(args, "backbone_size", "b")
     vit  = {"s": vit_small, "b": vit_base, "l": vit_large}[size]
-    backbone = vit(patch_size=14, img_size=518, init_values=1, block_chunks=0,
-                   num_register_tokens=4, use_adapter=False, use_film_adapter=False)
+    rgb_backbone = vit(patch_size=14, img_size=518, init_values=1, block_chunks=0, num_register_tokens=4, use_adapter=False)
+
+    agg_tokens = None
+    rgb_model_path = getattr(args, 'rgb_model_path', None)
+    if not args.resume and rgb_model_path:
+        ckpt = torch.load(rgb_model_path, map_location='cpu', weights_only=False)
+        sd   = ckpt.get('model_state_dict', ckpt)
+        if list(sd.keys())[0].startswith('module.'):
+            sd = {k[7:]: v for k, v in sd.items()}
+        rgb_backbone.load_state_dict(
+            {k[len('backbone.'):]: v for k, v in sd.items() if k.startswith('backbone.')},
+            strict=True)
+        if 'learnable_aggregation_tokens' in sd:
+            agg_tokens = sd['learnable_aggregation_tokens']
+        logging.info(f"RGB backbone loaded from: {rgb_model_path}")
+
+    for p in rgb_backbone.parameters():
+        p.requires_grad = False
+    return rgb_backbone, agg_tokens
+
+def get_backbone_thermal(args):
+    """GSV pretrained로 초기화, blocks >= freeze_te 만 trainable."""
+    import backbone.dinov2.block as dinoblock
+    dinoblock.adapter_dim = None
+
+    from backbone.vision_transformer import vit_small, vit_base, vit_large
+    size = getattr(args, "backbone_size", "b")
+    vit  = {"s": vit_small, "b": vit_base, "l": vit_large}[size]
+    thr_backbone = vit(patch_size=14, img_size=518, init_values=1, block_chunks=0, num_register_tokens=4, use_adapter=True)
 
     rgb_model_path = getattr(args, 'rgb_model_path', None)
     if not args.resume and rgb_model_path:
@@ -159,13 +135,24 @@ def get_backbone(args):
         sd   = ckpt.get('model_state_dict', ckpt)
         if list(sd.keys())[0].startswith('module.'):
             sd = {k[7:]: v for k, v in sd.items()}
-        backbone.load_state_dict(
-            {k[len('backbone.'):]: v for k, v in sd.items() if k.startswith('backbone.')},
-            strict=False
-        )
-        logging.info(f"backbone initialized from: {rgb_model_path}")
+        thr_backbone.load_state_dict({k[len('backbone.'):]: v for k, v in sd.items() if k.startswith('backbone.')}, strict=False)
+        if 'learnable_aggregation_tokens' in sd:
+            agg_tokens = sd['learnable_aggregation_tokens']
+        logging.info(f"Thermal backbone initialized from: {rgb_model_path}")
 
-    for p in backbone.parameters():
+    for p in thr_backbone.parameters():
         p.requires_grad = False
-
-    return backbone
+        
+    for name, child in thr_backbone.blocks.named_children():
+        if args.freeze_te and int(name) >= args.freeze_te:
+            for p in child.parameters():
+                p.requires_grad = True
+                
+    # for p in thr_backbone.norm.parameters():
+    #     p.requires_grad = True
+        
+    for name, param in thr_backbone.blocks.named_parameters():
+        if 'adapter' in name.lower():
+            param.requires_grad = True
+            
+    return thr_backbone, agg_tokens
